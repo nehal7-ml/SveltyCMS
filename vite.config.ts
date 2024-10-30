@@ -28,7 +28,9 @@ import { paraglide } from '@inlang/paraglide-vite';
 // Gets package.json version info on app start
 // https://kit.svelte.dev/faq#read-package-jsonimport { readFileSync } from 'fs'
 import { fileURLToPath } from 'url';
-import { compile } from './src/routes/api/compile/compile';
+
+// Collection utilities
+import { compile } from './src/routes/api/collectionCompile/compile';
 import { generateCollectionTypes, generateCollectionFieldTypes } from './src/utils/collectionTypes';
 
 // Get package.json version info
@@ -41,7 +43,7 @@ const parsed = Path.parse(__dirname);
 
 // Define paths for collections
 const collectionsFolderJS = Path.posix.join('/', __dirname.replace(parsed.root, ''), 'collections/');
-const collectionsFolderTS = Path.posix.join('/', __dirname.replace(parsed.root, ''), 'config/collections/');
+const collectionsFolderTS = resolve(__dirname, 'config/collections/');
 
 // Define config directory paths
 const configDir = resolve(__dirname, 'config');
@@ -74,7 +76,7 @@ export default defineConfig({
 			name: 'collection-handler',
 			async handleHotUpdate({ file, server }) {
 				// Handle collection file changes
-				if (/src[/\\]collections[/\\](?!index\.ts|types\.ts|categories\.ts).*\.ts$/.test(file)) {
+				if (/config[/\\]collections[/\\](?!index\.ts|types\.ts|categories\.ts).*\.ts$/.test(file)) {
 					console.log('Collection file changed:', file);
 					try {
 						// Compile the changed collection
@@ -153,7 +155,9 @@ export default defineConfig({
 		})
 	],
 	server: {
-		fs: { allow: ['static', '.'] } // Allow serving files from specific directories
+		fs: {
+			allow: ['.', 'static', 'config/collections']
+		}
 	},
 	resolve: {
 		alias: {

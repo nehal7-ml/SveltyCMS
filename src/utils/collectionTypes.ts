@@ -17,9 +17,9 @@ import fs from 'fs/promises';
 import path from 'path';
 import ts from 'typescript';
 
-const COLLECTIONS_DIR = 'src/collections';
+const COLLECTIONS_DIR = 'config/collections';
 const TYPES_FILE = path.join(COLLECTIONS_DIR, 'types.ts');
-const EXCLUDED_FILES = new Set(['index.ts', 'types.ts', 'config.ts']);
+const EXCLUDED_FILES = new Set(['index.ts', 'types.ts', 'categories.ts']);
 
 // Generates TypeScript union type of collection names
 export async function generateCollectionTypes(): Promise<void> {

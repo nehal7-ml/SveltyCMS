@@ -24,7 +24,7 @@ import fs from 'fs';
 import prettier from 'prettier';
 import prettierConfig from '@root/.prettierrc.json';
 import { updateCollections } from '@collections';
-import { compile } from '@api/compile/compile';
+import { compile } from '@api/collectionCompile/compile';
 import { redirect, type Actions, error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import type { WidgetType } from '@components/widgets';

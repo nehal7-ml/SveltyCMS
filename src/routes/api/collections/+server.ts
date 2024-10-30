@@ -4,11 +4,14 @@
  *
  * Features:
  * - Collection data retrieval with Memory cache or optional Redis caching
+ * - File-based collection operations
  * - Collection structure updates
- * - Category management
- * - Type generation
+ * - Category management integration
+ * - Performance optimized with batch processing
  */
 
+import path from 'path';
+import fs from 'fs/promises';
 import { error, json, type RequestHandler } from '@sveltejs/kit';
 import { browser } from '$app/environment';
 
@@ -21,15 +24,49 @@ import { isRedisEnabled, getCache, setCache, clearCache } from '@src/databases/r
 // System Logger
 import { logger } from '@src/utils/logger';
 
-// Cache TTL
+// Constants
 const CACHE_TTL = 300; // 5 minutes
+const COLLECTIONS_FOLDER = process.env.VITE_COLLECTIONS_FOLDER || './collections';
+const BATCH_SIZE = 50;
+
+// Safely parse collection file content
+function safeParseCollectionFile(content: string) {
+	try {
+		const sanitizedContent = content
+			.replace(/\bfunction\b/g, '"function"')
+			.replace(/\beval\b/g, '"eval"')
+			.replace(/\bnew\b/g, '"new"')
+			.replace(/\bclass\b/g, '"class"');
+
+		const parsed = JSON.parse(sanitizedContent);
+		if (typeof parsed !== 'object' || parsed === null) {
+			throw new Error('Invalid collection file structure');
+		}
+
+		return { default: parsed };
+	} catch (err) {
+		logger.error('Error parsing collection file:', err);
+		throw new Error('Invalid collection file format');
+	}
+}
+
+// Process files in batches
+async function processBatch(files: string[], baseFolder: string) {
+	return Promise.all(
+		files.map(async (file) => {
+			const filePath = path.join(baseFolder, file);
+			const content = await fs.readFile(filePath, 'utf-8');
+			return safeParseCollectionFile(content);
+		})
+	);
+}
 
 export const GET: RequestHandler = async ({ url }) => {
 	try {
 		const action = url.searchParams.get('action');
 		const name = url.searchParams.get('name');
 
-		// Try to get from Redis cache first
+		// Try Redis cache first
 		if (!browser && isRedisEnabled()) {
 			const cacheKey = `api:collections:${action || 'default'}${name ? `:${name}` : ''}`;
 			const cached = await getCache(cacheKey);
@@ -41,17 +78,45 @@ export const GET: RequestHandler = async ({ url }) => {
 
 		const { collections, categories } = collectionManager.getCollectionData();
 		let response;
-		let collection;
+		let foundCollection;
 
 		switch (action) {
 			case 'structure':
 				// Return full collection structure with categories
 				logger.info('Returning collection structure');
-				response = {
-					success: true,
-					data: { collections, categories }
-				};
+				response = { collections, categories };
 				break;
+
+			case 'files': {
+				// Return collection files with batch processing
+				const files = await fs.readdir(path.resolve(COLLECTIONS_FOLDER));
+				const jsFiles = files.filter((f) => f.endsWith('.js'));
+
+				// Process files in batches
+				const batches = [];
+				for (let i = 0; i < jsFiles.length; i += BATCH_SIZE) {
+					batches.push(jsFiles.slice(i, i + BATCH_SIZE));
+				}
+
+				const results = await Promise.all(batches.map((batch) => processBatch(batch, COLLECTIONS_FOLDER)));
+				response = results.flat();
+				break;
+			}
+
+			case 'file': {
+				// Return specific collection file
+				if (!name) throw error(400, 'File name required');
+				const fileName = path.basename(name);
+				const filePath = path.join(path.resolve(COLLECTIONS_FOLDER), fileName);
+
+				if (!filePath.startsWith(path.resolve(COLLECTIONS_FOLDER))) {
+					throw error(400, 'Invalid file path');
+				}
+
+				const content = await fs.readFile(filePath, 'utf-8');
+				response = safeParseCollectionFile(content);
+				break;
+			}
 
 			case 'names':
 				// Return just collection names
@@ -65,13 +130,13 @@ export const GET: RequestHandler = async ({ url }) => {
 					throw error(400, 'Collection name is required');
 				}
 
-				collection = collections.find((c) => c.name === name);
-				if (!collection) {
+				foundCollection = collections.find((c) => c.name === name);
+				if (!foundCollection) {
 					throw error(404, 'Collection not found');
 				}
 
 				logger.info(`Returning collection: ${name}`);
-				response = collection;
+				response = foundCollection;
 				break;
 
 			default:

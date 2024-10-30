@@ -14,7 +14,6 @@
  */
 
 import axios from 'axios';
-import crypto from 'crypto';
 import { browser } from '$app/environment';
 
 // Types
@@ -33,9 +32,6 @@ import { categories, collections, unAssigned, collection, collectionValue, mode 
 // Components
 import { initWidgets } from '@components/widgets';
 
-// Import category config directly
-import { categoryConfig } from './categories';
-
 interface ProcessedModule {
 	schema?: Partial<Schema>;
 }
@@ -52,6 +48,7 @@ const MAX_CACHE_SIZE = 100;
 const MAX_RETRIES = 3;
 const RETRY_DELAY = 1000;
 const EXCLUDED_FILES = ['index.ts', 'types.ts', 'categories.ts', 'CollectionManager.ts'];
+const COLLECTIONS_DIR = 'config/collections';
 
 // Performance monitoring utilities
 const getPerformanceEmoji = (responseTime: number): string => {
@@ -61,6 +58,7 @@ const getPerformanceEmoji = (responseTime: number): string => {
 	if (responseTime < 3000) return '🕰️'; // Slow
 	return '🐢'; // Very slow
 };
+
 class CollectionManager {
 	private static instance: CollectionManager | null = null;
 	private collectionCache: Map<string, CacheEntry<Schema>> = new Map();
@@ -70,12 +68,14 @@ class CollectionManager {
 	private initialized: boolean = false;
 	private loadedCollections: Schema[] = [];
 	private loadedCategories: Category[] = [];
+	private initializationPromise: Promise<void> | null = null;
 
 	private constructor() {
 		if (typeof window !== 'undefined') {
-			this.initialize().catch((err: unknown) => {
+			this.initializationPromise = this.initialize().catch((err: unknown) => {
 				const errorMessage = err instanceof Error ? err.message : String(err);
 				logger.error('Failed to initialize CollectionManager', { error: errorMessage });
+				throw err; // Re-throw to be caught by the caller
 			});
 		}
 	}
@@ -85,6 +85,13 @@ class CollectionManager {
 			CollectionManager.instance = new CollectionManager();
 		}
 		return CollectionManager.instance;
+	}
+
+	// Wait for initialization to complete
+	async waitForInitialization(): Promise<void> {
+		if (this.initializationPromise) {
+			await this.initializationPromise;
+		}
 	}
 
 	// Cache management methods with Redis support
@@ -182,6 +189,47 @@ class CollectionManager {
 		throw lastError;
 	}
 
+	// Process collection file with improved error handling
+	private async processCollectionFile(filePath: string): Promise<Schema | null> {
+		return this.retryOperation(async () => {
+			try {
+				const module = await import(/* @vite-ignore */ filePath);
+				const schema = module.schema;
+
+				if (!schema) {
+					logger.error(`No schema found in ${filePath}`);
+					return null;
+				}
+
+				const name = filePath
+					.split('/')
+					.pop()
+					?.replace(/\.(ts|js)$/, '');
+				if (!name) {
+					logger.error(`Could not extract name from ${filePath}`);
+					return null;
+				}
+
+				const randomId = await createRandomID();
+				const processed: Schema = {
+					...schema,
+					name: name as CollectionNames,
+					id: parseInt(randomId.toString().slice(0, 8), 16),
+					icon: schema.icon || 'iconoir:info-empty',
+					path: this.extractPathFromFilePath(filePath),
+					fields: schema.fields || []
+				};
+
+				await this.setCacheValue(filePath, processed, this.collectionCache);
+				return processed;
+			} catch (err) {
+				const errorMessage = err instanceof Error ? err.message : String(err);
+				logger.error(`Error processing collection file ${filePath}: ${errorMessage}`);
+				return null;
+			}
+		});
+	}
+
 	// Lazy loading with Redis support
 	private async lazyLoadCollection(name: CollectionNames): Promise<Schema | null> {
 		const cacheKey = `collection_${name}`;
@@ -194,10 +242,10 @@ class CollectionManager {
 		}
 
 		// Load if not cached
-		const path = `src/collections/${name}.ts`;
+		const path = `${COLLECTIONS_DIR}/${name}.ts`;
 		try {
-			const content = await this.readFile(path);
-			const schema = await this.processCollectionFile(path, content);
+			await this.readFile(path); // Check if file exists
+			const schema = await this.processCollectionFile(path);
 			if (schema) {
 				await this.setCacheValue(cacheKey, schema, this.collectionCache);
 				this.collectionAccessCount.set(name, (this.collectionAccessCount.get(name) || 0) + 1);
@@ -225,18 +273,33 @@ class CollectionManager {
 
 		try {
 			await this.measurePerformance(async () => {
+				// Initialize widgets first
 				initWidgets();
-				await this.updateCollections(true);
+
+				// Ensure collections are compiled
+				await axios.post('/api/collectionCompile');
+
+				// Load collections and categories
+				const [collections, categories] = await Promise.all([this.loadCollections(), this.createCategories()]);
+
+				if (!collections || collections.length === 0) {
+					throw new Error('No collections found after initialization');
+				}
+
+				this.loadedCollections = collections;
+				this.loadedCategories = categories;
 				this.initialized = true;
+
+				logger.info(`Initialized CollectionManager with ${collections.length} collections`);
 			}, 'Collection Manager Initialization');
 		} catch (err) {
 			const errorMessage = err instanceof Error ? err.message : String(err);
-			logger.error('Failed to load collections', { error: errorMessage });
-			throw new Error(`Failed to load collections: ${errorMessage}`);
+			logger.error('Failed to initialize CollectionManager', { error: errorMessage });
+			throw new Error(`Failed to initialize CollectionManager: ${errorMessage}`);
 		}
 	}
 
-	// Load and process collections with optimized batch processing
+	// Load collections with optimized batch processing
 	async loadCollections(): Promise<Schema[]> {
 		return this.measurePerformance(async () => {
 			try {
@@ -304,8 +367,8 @@ class CollectionManager {
 						// Server-side compilation
 						const files = await this.getCompiledCollectionFiles();
 						for (const filePath of files) {
-							const content = await this.readFile(filePath);
-							const schema = await this.processCollectionFile(filePath, content);
+							await this.readFile(filePath); // Check if file exists
+							const schema = await this.processCollectionFile(filePath);
 							if (schema) {
 								collections.push(schema);
 								await this.setCacheValue(filePath, schema, this.collectionCache);
@@ -327,58 +390,6 @@ class CollectionManager {
 				throw new Error(`Failed to load collections: ${errorMessage}`);
 			}
 		}, 'Load Collections');
-	}
-
-	// Process collection file with improved error handling
-	private async processCollectionFile(filePath: string, content: string): Promise<Schema | null> {
-		return this.retryOperation(async () => {
-			try {
-				const fileHash = crypto.createHash('md5').update(content).digest('hex');
-				const hashCacheKey = `hash_${filePath}`;
-
-				const cachedHash = await this.getCacheValue(hashCacheKey, this.fileHashCache);
-				if (cachedHash === fileHash) {
-					const cached = await this.getCacheValue(filePath, this.collectionCache);
-					if (cached) return cached;
-				}
-
-				const module = (await import(/* @vite-ignore */ filePath)) as ProcessedModule;
-				const schema = module.schema;
-
-				if (!schema) {
-					logger.error(`No schema found in ${filePath}`);
-					return null;
-				}
-
-				const name = filePath
-					.split('/')
-					.pop()
-					?.replace(/\.(ts|js)$/, '');
-				if (!name) {
-					logger.error(`Could not extract name from ${filePath}`);
-					return null;
-				}
-
-				const randomId = await createRandomID();
-				const processed: Schema = {
-					...schema,
-					name: name as CollectionNames,
-					id: parseInt(randomId.toString().slice(0, 8), 16),
-					icon: schema.icon || 'iconoir:info-empty',
-					path: this.extractPathFromFilePath(filePath),
-					fields: schema.fields || []
-				};
-
-				await this.setCacheValue(hashCacheKey, fileHash, this.fileHashCache);
-				await this.setCacheValue(filePath, processed, this.collectionCache);
-
-				return processed;
-			} catch (err) {
-				const errorMessage = err instanceof Error ? err.message : String(err);
-				logger.error(`Error processing collection file ${filePath}: ${errorMessage}`);
-				return null;
-			}
-		});
 	}
 
 	// Extract path from file path
@@ -409,7 +420,14 @@ class CollectionManager {
 
 	// Get compiled collection files
 	private async getCompiledCollectionFiles(): Promise<string[]> {
-		return [];
+		try {
+			const response = await axios.get('/api/collections?action=files');
+			return response.data;
+		} catch (err) {
+			const errorMessage = err instanceof Error ? err.message : String(err);
+			logger.error('Failed to get compiled collection files:', { error: errorMessage });
+			return [];
+		}
 	}
 
 	// Read file with retry mechanism
@@ -459,7 +477,9 @@ class CollectionManager {
 
 				logger.info(`Collections updated successfully. Count: ${cols.length}`);
 			} catch (err) {
-				logger.error(`Error in updateCollections: ${err}`);
+				const errorMessage = err instanceof Error ? err.message : String(err);
+				logger.error(`Error in updateCollections: ${errorMessage}`);
+				throw new Error(`Failed to update collections: ${errorMessage}`);
 			}
 		}, 'Update Collections');
 	}
@@ -467,77 +487,21 @@ class CollectionManager {
 	// Create categories with optimized processing and Redis caching
 	private async createCategories(): Promise<Category[]> {
 		return this.measurePerformance(async () => {
-			// Try getting from Redis cache first
-			if (!browser && isRedisEnabled()) {
-				const cachedCategories = await getCache<Category[]>('cms:categories');
-				if (cachedCategories) {
-					this.loadedCategories = cachedCategories;
-					return cachedCategories;
-				}
-			}
+			try {
+				const response = await this.retryOperation(async () => axios.get('/api/categories'));
+				const { categories } = response.data;
 
-			const categoryStructure: Record<string, CategoryData> = {};
-			const collectionsList = Array.from(this.collectionCache.values()).map((entry) => entry.value);
-
-			for (const collection of collectionsList) {
-				if (!collection.path) {
-					logger.warn(`Collection ${collection.name} has no path`);
-					continue;
+				if (!categories) {
+					throw new Error('No categories found');
 				}
 
-				const pathParts = collection.path.split('/');
-				let currentLevel = categoryStructure;
-				let currentPath = '';
-
-				for (const [index, part] of pathParts.entries()) {
-					currentPath = currentPath ? `${currentPath}/${part}` : part;
-
-					if (!currentLevel[part]) {
-						const randomId = await createRandomID();
-						const config = categoryConfig[currentPath] || {
-							icon: index === 0 ? 'bi:collection' : 'bi:folder',
-							order: 999
-						};
-
-						currentLevel[part] = {
-							id: randomId.toString(),
-							name: part,
-							icon: config.icon,
-							subcategories: {}
-						};
-					}
-
-					if (index === pathParts.length - 1) {
-						currentLevel[part].icon = collection.icon || currentLevel[part].icon;
-					}
-
-					currentLevel = currentLevel[part].subcategories!;
-				}
+				this.loadedCategories = categories;
+				return categories;
+			} catch (err) {
+				const errorMessage = err instanceof Error ? err.message : String(err);
+				logger.error('Failed to create categories', { error: errorMessage });
+				throw new Error(`Failed to create categories: ${errorMessage}`);
 			}
-
-			const categoryArray: Category[] = Object.entries(categoryStructure).map(([name, cat]) => ({
-				id: parseInt(cat.id),
-				name,
-				icon: cat.icon,
-				collections: collectionsList.filter((col) => col.path?.startsWith(name))
-			}));
-
-			// Cache in Redis if available
-			if (!browser && isRedisEnabled()) {
-				await setCache('cms:categories', categoryArray, REDIS_TTL);
-			}
-
-			// Update memory cache
-			this.categoryCache.clear();
-			Object.entries(categoryStructure).forEach(([path, category]) => {
-				this.categoryCache.set(path, {
-					value: category,
-					timestamp: Date.now()
-				});
-			});
-
-			this.loadedCategories = categoryArray;
-			return categoryArray;
 		}, 'Create Categories');
 	}
 }

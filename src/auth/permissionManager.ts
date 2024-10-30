@@ -5,13 +5,12 @@
  * This module provides functionality to:
  * - Read permissions from the configuration file
  * - Validate permissions for users and roles
- *
- * Usage:
- * Utilized by the auth system to manage permissions in a file-based configuration.
+ * - Sync permissions with collections
+ * - Handle centralized and decentralized permissions
  */
 
 import { error } from '@sveltejs/kit';
-import { getCollectionFiles } from '@src/routes/api/getCollections/getCollectionFiles';
+import axios from 'axios';
 
 // Permissions
 import { permissions as configPermissions, setPermissions } from '@root/config/permissions';
@@ -84,7 +83,6 @@ export async function getAllPermissions(): Promise<AuthPermission[]> {
 		const centralized = configPermissions.map(convertToAuthPermission);
 		const decentralized = decentralizedPermissions.map(convertToAuthPermission);
 		const allPermissions = [...centralized, ...decentralized];
-		//logger.debug(`All aggregated permissions: ${JSON.stringify(allPermissions)}`);
 		return allPermissions;
 	} catch (err) {
 		const message = `Error in getAllPermissions: ${err instanceof Error ? err.message : String(err)}`;
@@ -162,6 +160,18 @@ async function syncCollectionPermissions(collections: string[]): Promise<AuthPer
 	}
 }
 
+// Get collection files using the unified collections API
+async function getCollectionFiles(): Promise<string[]> {
+	try {
+		const response = await axios.get('/api/collections?action=files');
+		return response.data;
+	} catch (err) {
+		const message = `Error getting collection files: ${err instanceof Error ? err.message : String(err)}`;
+		logger.error(message);
+		throw error(500, message);
+	}
+}
+
 // Synchronizes permissions if needed
 export async function syncPermissions(): Promise<void> {
 	try {
@@ -174,15 +184,12 @@ export async function syncPermissions(): Promise<void> {
 		}));
 
 		const collectionPermissions = await syncCollectionPermissions(collections);
-
 		const centralizedPermissions: AuthPermission[] = [...configs, ...userManagementPermissions, ...collectionPermissions];
-
 		const allPermissions: AuthPermission[] = [...centralizedPermissions, ...decentralizedPermissions];
 
-		// Directly set permissions without expansion
+		// Set permissions
 		setPermissions(allPermissions);
-
-		logger.info('Permissions synchronized from configuration');
+		logger.info('Permissions synchronized successfully');
 	} catch (err) {
 		const message = `Error in syncPermissions: ${err instanceof Error ? err.message : String(err)}`;
 		logger.error(message);
@@ -198,13 +205,48 @@ export const permissionConfigs: Record<string, PermissionConfig> = {
 		action: PermissionAction.MANAGE,
 		contextType: 'system'
 	},
-	graphql: { contextId: 'config/graphql', name: 'GraphQL Management', action: PermissionAction.MANAGE, contextType: 'system' },
-	imageeditor: { contextId: 'config/imageeditor', name: 'ImageEditor Management', action: PermissionAction.MANAGE, contextType: 'system' },
-	dashboard: { contextId: 'config/dashboard', name: 'Dashboard Management', action: PermissionAction.MANAGE, contextType: 'system' },
-	widgetManagement: { contextId: 'config/widgetManagement', name: 'Widget Management', action: PermissionAction.MANAGE, contextType: 'system' },
-	themeManagement: { contextId: 'config/themeManagement', name: 'Theme Management', action: PermissionAction.MANAGE, contextType: 'system' },
-	settings: { contextId: 'config/settings', name: 'Settings Management', action: PermissionAction.MANAGE, contextType: 'system' },
-	accessManagement: { contextId: 'config/accessManagement', name: 'Access Management', action: PermissionAction.MANAGE, contextType: 'system' },
+	graphql: {
+		contextId: 'config/graphql',
+		name: 'GraphQL Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
+	imageeditor: {
+		contextId: 'config/imageeditor',
+		name: 'ImageEditor Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
+	dashboard: {
+		contextId: 'config/dashboard',
+		name: 'Dashboard Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
+	widgetManagement: {
+		contextId: 'config/widgetManagement',
+		name: 'Widget Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
+	themeManagement: {
+		contextId: 'config/themeManagement',
+		name: 'Theme Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
+	settings: {
+		contextId: 'config/settings',
+		name: 'Settings Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
+	accessManagement: {
+		contextId: 'config/accessManagement',
+		name: 'Access Management',
+		action: PermissionAction.MANAGE,
+		contextType: 'system'
+	},
 
 	// User Permissions
 	adminAreaPermissionConfig: {
@@ -223,5 +265,11 @@ export const permissionConfigs: Record<string, PermissionConfig> = {
 } as const;
 
 export const userManagementPermissions = [
-	{ _id: 'user:manage', name: 'Manage Users', action: PermissionAction.MANAGE, type: PermissionType.USER, description: 'Allows management of users.' }
+	{
+		_id: 'user:manage',
+		name: 'Manage Users',
+		action: PermissionAction.MANAGE,
+		type: PermissionType.USER,
+		description: 'Allows management of users.'
+	}
 ];

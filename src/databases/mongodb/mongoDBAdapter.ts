@@ -268,7 +268,7 @@ export class MongoDBAdapter implements dbInterface {
 						} else {
 							logger.debug(`Creating new collection model for ${collection.name}.`);
 							collectionsModels[collection.name] = mongoose.model(collection.name, schemaObject);
-							logger.info(`Collection ${collection.name} created.`);
+							logger.debug(`Collection ${collection.name} created.`);
 						}
 
 						logger.info(`Collection model for ${collection.name} set up successfully.`);
