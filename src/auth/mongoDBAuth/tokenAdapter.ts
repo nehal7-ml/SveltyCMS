@@ -29,12 +29,14 @@ import { logger } from '@utils/logger.svelte';
 export const TokenSchema = new Schema(
 	{
 		user_id: { type: String, required: true }, // ID of the user who owns the token, required field
+		tenantId: { type: String, index: true }, // Tenant identifier for multi-tenancy
 		token: { type: String, required: true, unique: true }, // Token string, required field
 		email: { type: String, required: true }, // Email associated with the token, required field
 		expires: { type: Date, required: true }, // Expiry timestamp of the token, required field
 		type: { type: String, required: true }, // Type of the token, required field
 		username: { type: String, required: false }, // Username associated with the token
-		role: { type: String, required: false } // Role associated with the token
+		role: { type: String, required: false }, // Role associated with the token
+		blocked: { type: Boolean, required: false, default: false } // Whether the token is blocked
 	},
 	{ timestamps: true } // Automatically adds `createdAt` and `updatedAt` fields
 );
@@ -49,11 +51,20 @@ export class TokenAdapter implements Partial<authDBInterface> {
 		this.TokenModel = mongoose.models?.auth_tokens || mongoose.model<TokenDocument>('auth_tokens', TokenSchema);
 	}
 
-	async createToken(data: { user_id: string; email: string; expires: Date; type: string; username?: string; role?: string }): Promise<string> {
+	async createToken(data: {
+		user_id: string;
+		email: string;
+		expires: Date;
+		type: string;
+		username?: string;
+		role?: string;
+		tenantId?: string;
+	}): Promise<string> {
 		try {
 			const token = crypto.randomBytes(32).toString('base64url'); // Generate a 44-character base64url token
 			const newToken = new this.TokenModel({
 				user_id: data.user_id,
+				tenantId: data.tenantId,
 				email: data.email.toLowerCase(), // Normalize email to lowercase
 				expires: data.expires,
 				type: data.type,
@@ -62,26 +73,36 @@ export class TokenAdapter implements Partial<authDBInterface> {
 				token
 			});
 			await newToken.save();
-			logger.debug('Token created', { user_id: data.user_id, type: data.type });
+			logger.debug('Token created', { user_id: data.user_id, type: data.type, tenantId: data.tenantId });
 			return token;
 		} catch (err) {
 			const message = `Error in TokenAdapter.createToken: ${err instanceof Error ? err.message : String(err)}`;
 			logger.error(message, { user_id: data.user_id, type: data.type });
 			throw error(500, message);
 		}
-	}
+	} // Validate a token
 
-	// Validate a token
-	async validateToken(token: string, user_id?: string, type?: string): Promise<{ success: boolean; message: string; email?: string }> {
+	async validateToken(
+		token: string,
+		user_id?: string,
+		type?: string,
+		tenantId?: string
+	): Promise<{ success: boolean; message: string; email?: string }> {
 		try {
 			const query: mongoose.FilterQuery<Token> = { token };
 			if (user_id) query.user_id = user_id;
 			if (type) query.type = type;
+			if (tenantId) query.tenantId = tenantId;
 
 			const tokenDoc = await this.TokenModel.findOne(query).lean();
 			if (!tokenDoc) {
 				logger.warn('Invalid token', { token });
 				return { success: false, message: 'Token is invalid' };
+			} // Check if token is blocked
+
+			if (tokenDoc.blocked) {
+				logger.warn('Blocked token', { user_id: tokenDoc.user_id, type: tokenDoc.type });
+				return { success: false, message: 'Token is blocked' };
 			}
 
 			if (new Date(tokenDoc.expires) > new Date()) {
@@ -96,19 +117,24 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { token, user_id, type });
 			throw error(500, message);
 		}
-	}
+	} // Consume a token
 
-	// Consume a token
-	async consumeToken(token: string, user_id?: string, type?: string): Promise<{ status: boolean; message: string }> {
+	async consumeToken(token: string, user_id?: string, type?: string, tenantId?: string): Promise<{ status: boolean; message: string }> {
 		try {
 			const query: mongoose.FilterQuery<Token> = { token };
 			if (user_id) query.user_id = user_id;
 			if (type) query.type = type;
+			if (tenantId) query.tenantId = tenantId;
 
 			const tokenDoc = await this.TokenModel.findOneAndDelete(query).lean();
 			if (!tokenDoc) {
 				logger.warn('Invalid token consumption attempt', { token });
 				return { status: false, message: 'Token is invalid' };
+			} // Check if token was blocked
+
+			if (tokenDoc.blocked) {
+				logger.warn('Blocked token consumption attempt', { user_id: tokenDoc.user_id, type: tokenDoc.type });
+				return { status: false, message: 'Token is blocked' };
 			}
 
 			if (new Date(tokenDoc.expires) > new Date()) {
@@ -123,9 +149,8 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { token, user_id, type });
 			throw error(500, message);
 		}
-	}
+	} // Get all tokens
 
-	// Get all tokens
 	async getAllTokens(filter?: Record<string, unknown>): Promise<Token[]> {
 		try {
 			const tokens = await this.TokenModel.find(filter || {}).lean();
@@ -136,9 +161,8 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { filter });
 			throw error(500, message);
 		}
-	}
+	} // Delete expired tokens
 
-	// Delete expired tokens
 	async deleteExpiredTokens(): Promise<number> {
 		try {
 			const result = await this.TokenModel.deleteMany({ expires: { $lte: new Date() } });
@@ -149,9 +173,8 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message);
 			throw error(500, message);
 		}
-	}
+	} // Delete multiple tokens by token strings
 
-	// Delete multiple tokens by token strings
 	async deleteTokens(tokens: string[]): Promise<number> {
 		try {
 			const result = await this.TokenModel.deleteMany({ token: { $in: tokens } });
@@ -162,13 +185,12 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { tokens });
 			throw error(500, message);
 		}
-	}
+	} // Block multiple tokens (set them as blocked )
 
-	// Block multiple tokens (set them as blocked/expired)
 	async blockTokens(tokens: string[]): Promise<number> {
 		try {
-			// Set tokens to expire immediately to effectively block them
-			const result = await this.TokenModel.updateMany({ token: { $in: tokens } }, { expires: new Date() });
+			// Set blocked status to true
+			const result = await this.TokenModel.updateMany({ token: { $in: tokens } }, { blocked: true });
 			logger.info('Tokens blocked', { modifiedCount: result.modifiedCount, tokens });
 			return result.modifiedCount;
 		} catch (err) {
@@ -176,14 +198,12 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { tokens });
 			throw error(500, message);
 		}
-	}
+	} // Unblock multiple tokens
 
-	// Unblock multiple tokens (extend their expiration)
 	async unblockTokens(tokens: string[]): Promise<number> {
 		try {
-			// Extend expiration by 7 days from now to unblock
-			const newExpiry = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-			const result = await this.TokenModel.updateMany({ token: { $in: tokens } }, { expires: newExpiry });
+			// Set blocked status to false to unblock
+			const result = await this.TokenModel.updateMany({ token: { $in: tokens } }, { blocked: false });
 			logger.info('Tokens unblocked', { modifiedCount: result.modifiedCount, tokens });
 			return result.modifiedCount;
 		} catch (err) {
@@ -191,9 +211,8 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { tokens });
 			throw error(500, message);
 		}
-	}
+	} // Update a single token
 
-	// Update a single token
 	async updateToken(
 		token: string,
 		updateData: Partial<{ email: string; role: string; expiresInHours: number; user_id: string; username: string }>
@@ -222,9 +241,8 @@ export class TokenAdapter implements Partial<authDBInterface> {
 			logger.error(message, { token, updateData });
 			throw error(500, message);
 		}
-	}
+	} // Get token details by token value
 
-	// Get token details by token value
 	async getTokenByValue(token: string): Promise<Token | null> {
 		try {
 			const tokenDoc = await this.TokenModel.findOne({ token }).lean();
@@ -235,7 +253,12 @@ export class TokenAdapter implements Partial<authDBInterface> {
 						token: tokenDoc.token,
 						email: tokenDoc.email,
 						expires: tokenDoc.expires,
-						type: tokenDoc.type
+						type: tokenDoc.type,
+						blocked: tokenDoc.blocked,
+						username: tokenDoc.username,
+						role: tokenDoc.role,
+						createdAt: tokenDoc.createdAt,
+						updatedAt: tokenDoc.updatedAt
 					}
 				: null;
 		} catch (err) {

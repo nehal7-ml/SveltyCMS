@@ -1,16 +1,22 @@
 /**
  * @file src/routes/api/media/delete/+server.ts
  * @description
- * API endpoint for changing the access of a media file.
+ * API endpoint for deleting a media file within the current tenant.
+ *
+ * @example DELETE /api/media/delete
+ *
+ * Features:
+ * - Secure, granular access control per operation
+ * - Automatic metadata updates on modification (updatedBy)
+ * - ModifyRequest support for widget-based data processing
+ * - Status-based access control for non-admin users
  */
 
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { error } from '@sveltejs/kit';
+import { privateEnv } from '@root/config/private';
 
-// Auth
-import { auth } from '@src/databases/db';
-import { SESSION_COOKIE_NAME } from '@src/auth';
+// Permissions
 
 // Media
 import { deleteFile } from '@utils/media/mediaStorage';
@@ -18,36 +24,33 @@ import { deleteFile } from '@utils/media/mediaStorage';
 // System Logger
 import { logger } from '@utils/logger.svelte';
 
-export const DELETE: RequestHandler = async ({ request, cookies }) => {
-	const session_id = cookies.get(SESSION_COOKIE_NAME);
-	if (!session_id) {
-		logger.warn('No session ID found during file deletion');
-		throw error(401, 'Unauthorized');
-	}
+export const DELETE: RequestHandler = async ({ request, locals }) => {
+	const { user, tenantId } = locals;
+	// Authentication is handled by hooks.server.ts - user presence confirms access
 
-	if (!auth) {
-		logger.error('Auth service is not initialized');
-		throw error(500, 'Auth service not available');
+	if (privateEnv.MULTI_TENANT && !tenantId) {
+		throw error(400, 'Tenant could not be identified for this operation.');
 	}
 
 	try {
-		const user = await auth.validateSession(session_id);
-		if (!user) {
-			logger.warn('Invalid session during file deletion');
-			throw error(401, 'Unauthorized');
-		}
-
 		const { url } = await request.json();
 		if (!url) {
 			throw error(400, 'URL is required');
 		}
 
-		await deleteFile(url);
+		// Pass tenantId to ensure the file is deleted from the correct tenant's storage
+		await deleteFile(url, tenantId);
+
+		logger.info('File deleted successfully', {
+			url,
+			user: user?.email || 'unknown',
+			tenantId
+		});
 
 		return json({ success: true });
 	} catch (err) {
 		const message = `Error deleting file: ${err instanceof Error ? err.message : String(err)}`;
-		logger.error(message);
+		logger.error(message, { user: user?.email || 'unknown', tenantId });
 		throw error(500, message);
 	}
 };

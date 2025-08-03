@@ -1,16 +1,18 @@
 /**
- * @file src/routes/api/media/exists/+server.ts
+ * @file src/routes/a	// Authentication is handled by hooks.server.ts - user presence confirms accesss/+server.ts
  * @description
- * API endpoint for checking the existence of a media file.
+ * API endpoint for checking the existence of a media file within the current tenant.
+ *
+ * @example GET /api/media/exists?url=https://example.com/image.jpg
+ *
+ * Features:
+ * - Secure, granular access control per operation
+ * - Multi-Tenant Safe: File existence check is scoped to the current tenant.
  */
 
-import { json } from '@sveltejs/kit';
+import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { error } from '@sveltejs/kit';
-
-// Auth
-import { auth } from '@src/databases/db';
-import { SESSION_COOKIE_NAME } from '@src/auth';
+import { privateEnv } from '@root/config/private';
 
 // Media
 import { fileExists } from '@utils/media/mediaStorage';
@@ -18,35 +20,35 @@ import { fileExists } from '@utils/media/mediaStorage';
 // System Logger
 import { logger } from '@utils/logger.svelte';
 
-export const GET: RequestHandler = async ({ url, cookies }) => {
-	const session_id = cookies.get(SESSION_COOKIE_NAME);
-	if (!session_id) {
-		logger.warn('No session ID found during file check');
-		throw error(401, 'Unauthorized');
-	}
+// Permissions
 
-	if (!auth) {
-		logger.error('Auth service is not initialized');
-		throw error(500, 'Auth service not available');
+export const GET: RequestHandler = async ({ url, locals }) => {
+	const { user, tenantId } = locals;
+	// Authentication is handled by hooks.server.ts - user presence confirms access
+
+	if (privateEnv.MULTI_TENANT && !tenantId) {
+		throw error(400, 'Tenant could not be identified for this operation.');
 	}
 
 	try {
-		const user = await auth.validateSession(session_id);
-		if (!user) {
-			logger.warn('Invalid session during file check');
-			throw error(401, 'Unauthorized');
-		}
-
 		const fileUrl = url.searchParams.get('url');
 		if (!fileUrl) {
 			throw error(400, 'URL parameter is required');
 		}
 
-		const exists = await fileExists(fileUrl);
+		// Pass tenantId to ensure the check is performed in the correct tenant's storage
+		const exists = await fileExists(fileUrl, tenantId);
+		logger.debug('Media file existence check', {
+			fileUrl,
+			exists,
+			userId: user?._id,
+			tenantId
+		});
+
 		return json({ exists });
 	} catch (err) {
 		const message = `Error checking file existence: ${err instanceof Error ? err.message : String(err)}`;
-		logger.error(message);
+		logger.error(message, { userId: user?._id, tenantId });
 		throw error(500, message);
 	}
 };

@@ -59,10 +59,10 @@ function getCookie(name: string): string | null {
 // Create base stores
 const createBaseStores = () => {
 	// Get initial values from cookies or use defaults
-	const initialSystemLanguage = (getCookie('systemLanguage') as Locale | null) ?? (publicEnv.DEFAULT_SYSTEM_LANGUAGE as Locale);
+	const initialSystemLanguage = (getCookie('systemLanguage') as Locale | null) ?? (publicEnv.BASE_LOCALE as Locale);
 	const initialContentLanguage = (getCookie('contentLanguage') as Locale | null) ?? (publicEnv.DEFAULT_CONTENT_LANGUAGE as Locale);
 
-	// Language and i18n
+	// Language and ParaglideJS i18n
 	const systemLanguage = store<Locale>(initialSystemLanguage);
 	const contentLanguage = store<Locale>(initialContentLanguage);
 
@@ -208,7 +208,7 @@ const createBaseStores = () => {
 	});
 
 	return {
-		// Language and i18n
+		// Language and ParaglideJS i18n
 		systemLanguage,
 		contentLanguage,
 
@@ -304,7 +304,17 @@ export const translationStatusOpen = () => stores.translationStatusOpen;
 export const setTranslationStatusOpen = (value: boolean) => {
 	stores.translationStatusOpen = value;
 };
-export const translationProgress = () => stores.translationProgress;
+export const translationProgress = {
+	get value() {
+		return stores.translationProgress;
+	},
+	set(value: TranslationProgress) {
+		stores.translationProgress = value;
+	},
+	update(updater: (value: TranslationProgress) => TranslationProgress) {
+		stores.translationProgress = updater(stores.translationProgress);
+	}
+};
 
 // Export update functions for the rune-based stores
 export const updateTranslationStatus = (value: Record<string, unknown>) => {
@@ -319,6 +329,11 @@ export const updateTranslationStatusOpen = (value: boolean) => {
 export const updateTranslationProgress = (value: TranslationProgress) => {
 	stores.translationProgress = value;
 };
+
+// Updates the system language, ensuring the change is persisted to cookies
+export function setSystemLanguage(lang: Locale) {
+	systemLanguage.set(lang);
+}
 
 // Export table headers constant
 export const tableHeaders = ['id', 'email', 'username', 'role', 'createdAt'] as const;

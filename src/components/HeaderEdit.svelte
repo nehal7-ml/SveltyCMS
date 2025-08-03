@@ -26,40 +26,42 @@
  - Cancel and reload functionality for editing mode
  - Full dark mode support with theme-based styling
 -->
-
 <script lang="ts">
-	import { saveFormData } from '../utils/data';
-
-	// Components
-	import TranslationStatus from './TranslationStatus.svelte';
-	import ScheduleModal from './ScheduleModal.svelte';
-
-	// Skeleton
-	import { getModalStore, getToastStore, type ModalComponent, type ModalSettings } from '@skeletonlabs/skeleton';
-	const modalStore = getModalStore();
-	const toastStore = getToastStore();
-
-	// Stores
-	import { page } from '$app/state';
-	import { collection, collectionValue, mode, modifyEntry, statusMap } from '@src/stores/collectionStore.svelte';
-	import { uiStateManager, toggleUIElement } from '@src/stores/UIStore.svelte';
-	import { screenSize } from '@src/stores/screenSizeStore.svelte';
-	import { contentLanguage, tabSet, headerActionButton, validationStore } from '@stores/store.svelte';
-
-	// Auth
-	import type { User } from '@src/auth/types';
-	let user = $derived(page.data.user as User);
+	import { saveEntry } from '@utils/entryActions'; // Only import what's actually used
+	// Types
+	import { StatusTypes } from '@src/content/types';
+	import ScheduleModal from './collectionDisplay/ScheduleModal.svelte';
+	import TranslationStatus from './collectionDisplay/TranslationStatus.svelte';
+	import { getModalStore, getToastStore } from '@skeletonlabs/skeleton';
+	import { invalidateCollectionCache, batchUpdateEntries, updateEntryStatus, createEntry } from '@src/utils/apiClient';
+	import { publicEnv } from '@root/config/public';
 
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
+
+	// Get store instances
+	const toastStore = getToastStore();
+	const modalStore = getModalStore();
+
+	// Modal types import
+	import type { ModalSettings, ModalComponent } from '@skeletonlabs/skeleton';
+
+	// Stores
+	import { page } from '$app/state';
+	import { collection, collectionValue, mode, statusMap } from '@src/stores/collectionStore.svelte';
+	import { screenSize } from '@src/stores/screenSizeStore.svelte';
+	import { toggleUIElement, uiStateManager } from '@src/stores/UIStore.svelte';
+	import { contentLanguage, headerActionButton, tabSet, validationStore } from '@stores/store.svelte';
+
+	// Types
+	import type { User } from '@src/auth/types';
+	import type { StatusType } from '@src/content/types';
+	let user = $derived(page.data.user as User);
 
 	interface ScheduleResponse {
 		date: string;
 		action: string;
 	}
-
-	// Define StatusType based on statusMap values
-	type StatusType = (typeof statusMap)[keyof typeof statusMap];
 
 	interface CollectionData extends Record<string, any> {
 		_id?: string;
@@ -81,21 +83,19 @@
 	let createdAtDate = $state<string>(
 		typeof collectionValue.value?.createdAt === 'number' ? new Date(collectionValue.value.createdAt * 1000).toISOString().slice(0, 16) : ''
 	);
-	let saveLayerStore = $state<() => Promise<void>>(async () => {});
 	let showMore = $state<boolean>(false);
-	let next = $state<() => Promise<void>>(() => Promise.resolve());
 
 	// Modal Trigger - Schedule
 	function openScheduleModal(): void {
 		const modalComponent: ModalComponent = {
 			ref: ScheduleModal,
-			slot: '<p>Edit Form</p>'
+			slot: '<p>Edit Form</p>' // Note: This slot content usually overrides ScheduleModal's own content, consider if truly desired.
 		};
 
 		const modalSettings: ModalSettings = {
 			type: 'component',
-			title: 'Scheduler',
-			body: 'Set a date and time to schedule this entry.',
+			title: m.scheduler_title(),
+			body: m.scheduler_body(),
 			component: modalComponent,
 			response: (r: ScheduleResponse | boolean) => {
 				if (typeof r === 'object' && 'date' in r) {
@@ -103,7 +103,7 @@
 					if (r.action === 'schedule') {
 						const newValue = {
 							...collectionValue.value,
-							status: statusMap.scheduled as StatusType,
+							status: StatusTypes.schedule,
 							_scheduled: new Date(r.date).getTime()
 						};
 						collectionValue.set(newValue);
@@ -125,9 +125,6 @@
 		if (mode.value === 'view') {
 			tempData = {};
 		}
-		if (mode.value === 'edit' && collectionValue.value?.status === statusMap.published) {
-			modifyEntry.value?.(statusMap.unpublished);
-		}
 	});
 
 	$effect(() => {
@@ -136,63 +133,34 @@
 		}
 	});
 
-	$effect(() => {
-		next = saveLayerStore;
-	});
-
 	// Save form data with validation
 	async function saveData() {
-		if (!collection.value) return;
-
-		// Use the reactive validation store; no need to re-validate here
 		if (!validationStore.isValid) {
 			console.warn('Save blocked due to validation errors.');
 			toastStore.trigger({
-				message: 'Please fix validation errors before saving',
-				background: 'variant-filled-error',
-				timeout: 3000
+				message: m.validation_fix_before_save(),
+				background: 'variant-filled-error'
 			});
 			return;
 		}
 
-		// Use a snapshot of the current reactive store values for saving
-		const currentCollection = collection.value;
 		const dataToSave = { ...collectionValue.value };
 
-		// Add or update system fields
+		// Set metadata for all saves
 		if (mode.value === 'create') {
 			dataToSave.createdBy = user?.username ?? 'system';
 		}
 		dataToSave.updatedBy = user?.username ?? 'system';
 
-		// Handle schedule information
+		// Handle scheduling if set
 		if (schedule && schedule.trim() !== '') {
 			dataToSave._scheduled = new Date(schedule).getTime();
 		} else {
 			delete dataToSave._scheduled;
 		}
 
-		// Save data
-		try {
-			await saveFormData({
-				data: dataToSave, // Pass the plain object directly
-				_collection: currentCollection,
-				_mode: mode.value,
-				id: dataToSave._id as string | undefined,
-				user
-			});
-
-			// Consistent state management with RightSidebar
-			mode.set('view');
-			toggleUIElement('leftSidebar', screenSize.value === 'LG' ? 'full' : 'collapsed');
-		} catch (err) {
-			console.error('Failed to save data:', err);
-			toastStore.trigger({
-				message: 'Failed to save data',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
-		}
+		await saveEntry(dataToSave, toastStore);
+		toggleUIElement('leftSidebar', screenSize.value === 'LG' ? 'full' : 'collapsed');
 	}
 
 	// function to undo the changes made by handleButtonClick
@@ -202,12 +170,227 @@
 	}
 
 	function handleReload() {
-		mode.set('edit');
+		mode.set('edit'); // Keeps it in edit mode, maybe just re-renders
 	}
 
-	// Handle entry modifications
-	function handleModifyEntry(status: keyof typeof statusMap) {
-		modifyEntry.value?.(status);
+	// Delete confirmation modal
+	function openDeleteModal(): void {
+		const isArchiving = publicEnv.USE_ARCHIVE_ON_DELETE;
+
+		const modalSettings: ModalSettings = {
+			type: 'confirm',
+			title: `Please Confirm <span class="text-error-500 font-bold">${isArchiving ? 'Archiving' : 'Deletion'}</span>`,
+			body: isArchiving
+				? `Are you sure you want to <span class="text-warning-500 font-semibold">archive</span> this entry? Archived items can be restored later.`
+				: `Are you sure you want to <span class="text-error-500 font-semibold">delete</span> this entry? This action will remove the entry from the system.`,
+			buttonTextConfirm: isArchiving ? 'Archive' : 'Delete',
+			buttonTextCancel: 'Cancel',
+			meta: {
+				buttonConfirmClasses: isArchiving ? 'bg-warning-500 hover:bg-warning-600 text-white' : 'bg-error-500 hover:bg-error-600 text-white'
+			},
+			response: async (confirmed: boolean) => {
+				if (confirmed) {
+					const entry = collectionValue.value;
+					const coll = collection.value;
+					if (!entry?._id || !coll?._id) {
+						toastStore.trigger({
+							message: 'No entry or collection selected.',
+							background: 'variant-filled-warning'
+						});
+						return;
+					}
+
+					try {
+						const targetStatus = isArchiving ? StatusTypes.archive : StatusTypes.delete;
+						const result = await batchUpdateEntries(coll._id, {
+							ids: [entry._id],
+							status: targetStatus
+						});
+
+						if (result.success) {
+							toastStore.trigger({
+								message: isArchiving ? 'Entry archived successfully.' : 'Entry deleted successfully.',
+								background: 'variant-filled-success'
+							});
+							mode.set('view');
+							collectionValue.set({});
+							invalidateCollectionCache(coll._id);
+						} else {
+							toastStore.trigger({
+								message: result.error || `Failed to ${isArchiving ? 'archive' : 'delete'} entry`,
+								background: 'variant-filled-error'
+							});
+						}
+					} catch (e) {
+						toastStore.trigger({
+							message: `Error ${isArchiving ? 'archiving' : 'deleting'} entry: ${(e as Error).message}`,
+							background: 'variant-filled-error'
+						});
+					}
+				}
+			}
+		};
+		modalStore.trigger(modalSettings);
+	}
+
+	// Publish confirmation modal
+	function openPublishModal(): void {
+		const modalSettings: ModalSettings = {
+			type: 'confirm',
+			title: `Please Confirm <span class="text-primary-500 font-bold">Publication</span>`,
+			body: `Are you sure you want to <span class="text-primary-500 font-semibold">publish</span> this entry? This will make it visible to the public.`,
+			buttonTextConfirm: 'Publish',
+			buttonTextCancel: 'Cancel',
+			meta: {
+				buttonConfirmClasses: 'bg-primary-500 hover:bg-primary-600 text-white'
+			},
+			response: async (confirmed: boolean) => {
+				if (confirmed) {
+					const entry = collectionValue.value;
+					const coll = collection.value;
+					if (!entry?._id || !coll?._id) {
+						toastStore.trigger({
+							message: 'No entry or collection selected.',
+							background: 'variant-filled-warning'
+						});
+						return;
+					}
+
+					try {
+						const result = await updateEntryStatus(String(coll._id), String(entry._id), StatusTypes.publish);
+						if (result.success) {
+							collectionValue.update((cv) => ({ ...cv, status: StatusTypes.publish }));
+							toastStore.trigger({
+								message: 'Entry published successfully.',
+								background: 'variant-filled-success'
+							});
+						} else {
+							toastStore.trigger({
+								message: result.error || 'Failed to publish entry',
+								background: 'variant-filled-error'
+							});
+						}
+					} catch (e) {
+						toastStore.trigger({
+							message: `Error publishing entry: ${(e as Error).message}`,
+							background: 'variant-filled-error'
+						});
+					}
+				}
+			}
+		};
+		modalStore.trigger(modalSettings);
+	}
+
+	// Unpublish confirmation modal
+	function openUnpublishModal(): void {
+		const modalSettings: ModalSettings = {
+			type: 'confirm',
+			title: `Please Confirm <span class="text-yellow-500 font-bold">Unpublication</span>`,
+			body: `Are you sure you want to <span class="text-yellow-500 font-semibold">unpublish</span> this entry? This will hide it from the public.`,
+			buttonTextConfirm: 'Unpublish',
+			buttonTextCancel: 'Cancel',
+			meta: {
+				buttonConfirmClasses: 'bg-yellow-500 hover:bg-yellow-600 text-white'
+			},
+			response: async (confirmed: boolean) => {
+				if (confirmed) {
+					const entry = collectionValue.value;
+					const coll = collection.value;
+					if (!entry?._id || !coll?._id) {
+						toastStore.trigger({
+							message: 'No entry or collection selected.',
+							background: 'variant-filled-warning'
+						});
+						return;
+					}
+
+					try {
+						const result = await updateEntryStatus(String(coll._id), String(entry._id), StatusTypes.unpublish);
+						if (result.success) {
+							collectionValue.update((cv) => ({ ...cv, status: StatusTypes.unpublish }));
+							toastStore.trigger({
+								message: 'Entry unpublished successfully.',
+								background: 'variant-filled-success'
+							});
+						} else {
+							toastStore.trigger({
+								message: result.error || 'Failed to unpublish entry',
+								background: 'variant-filled-error'
+							});
+						}
+					} catch (e) {
+						toastStore.trigger({
+							message: `Error unpublishing entry: ${(e as Error).message}`,
+							background: 'variant-filled-error'
+						});
+					}
+				}
+			}
+		};
+		modalStore.trigger(modalSettings);
+	}
+
+	// Clone confirmation modal
+	function openCloneModal(): void {
+		const modalSettings: ModalSettings = {
+			type: 'confirm',
+			title: `Please Confirm <span class="text-secondary-500 font-bold">Cloning</span>`,
+			body: `Are you sure you want to <span class="text-secondary-500 font-semibold">clone</span> this entry? This will create a duplicate copy.`,
+			buttonTextConfirm: 'Clone',
+			buttonTextCancel: 'Cancel',
+			meta: {
+				buttonConfirmClasses: 'bg-secondary-500 hover:bg-secondary-600 text-white'
+			},
+			response: async (confirmed: boolean) => {
+				if (confirmed) {
+					const entry = collectionValue.value;
+					const coll = collection.value;
+					if (!entry || !coll?._id) {
+						toastStore.trigger({
+							message: 'No entry or collection selected.',
+							background: 'variant-filled-warning'
+						});
+						return;
+					}
+
+					try {
+						// Create a deep copy of the entry with all its data
+						const clonedPayload = JSON.parse(JSON.stringify(entry));
+
+						// Remove unique identifiers and timestamps
+						delete clonedPayload._id;
+						delete clonedPayload.createdAt;
+						delete clonedPayload.updatedAt;
+
+						// Set clone status and reference to original
+						clonedPayload.status = StatusTypes.clone;
+						clonedPayload.clonedFrom = entry._id;
+
+						const result = await createEntry(coll._id, clonedPayload);
+						if (result.success) {
+							toastStore.trigger({
+								message: 'Entry cloned successfully.',
+								background: 'variant-filled-success'
+							});
+							invalidateCollectionCache(coll._id);
+							mode.set('view');
+						} else {
+							toastStore.trigger({
+								message: result.error || 'Failed to clone entry',
+								background: 'variant-filled-error'
+							});
+						}
+					} catch (e) {
+						toastStore.trigger({
+							message: `Error cloning entry: ${(e as Error).message}`,
+							background: 'variant-filled-error'
+						});
+					}
+				}
+			}
+		};
+		modalStore.trigger(modalSettings);
 	}
 </script>
 
@@ -216,7 +399,6 @@
 	class:border-b={!showMore}
 >
 	<div class="flex items-center justify-start">
-		<!-- Hamburger -->
 		{#if uiStateManager.uiState.value.leftSidebar === 'hidden'}
 			<button
 				type="button"
@@ -228,7 +410,6 @@
 			</button>
 		{/if}
 
-		<!-- Collection type with icon -->
 		{#if collection.value}
 			<div class="flex {!uiStateManager.uiState.value.leftSidebar ? 'ml-2' : 'ml-1'}">
 				{#if collection.value.icon}
@@ -241,7 +422,7 @@
 						<div class="text-sm uppercase">
 							{mode.value}:
 						</div>
-						<div class="text-xs capitalize">
+						<div class="text-sm capitalize">
 							<span class="uppercase text-tertiary-500 dark:text-primary-500">{collection.value.name}</span>
 						</div>
 					</div>
@@ -251,16 +432,21 @@
 	</div>
 
 	<div class="flex items-center justify-end gap-1 sm:gap-2 md:gap-4">
-		<!-- Mobile specific buttons -->
 		{#if screenSize.value === 'MD' || screenSize.value === 'SM' || screenSize.value === 'XS'}
 			{#if showMore}
-				<!-- Mobile: Show More Active -->
-				<button type="button" onclick={next} aria-label="Next" class="variant-filled-tertiary btn-icon dark:variant-filled-primary">
-					<iconify-icon icon="carbon:next-filled" width="24" class="text-white"></iconify-icon>
-					<span class="hidden lg:block">{m.button_next()}</span>
-				</button>
+				{#if ['edit', 'create'].includes(mode.value)}
+					<button
+						type="button"
+						onclick={saveData}
+						aria-label="Save"
+						class="variant-filled-tertiary btn-icon dark:variant-filled-primary"
+						disabled={!validationStore.isValid || collection.value?.permissions?.[user.role]?.write === false}
+					>
+						<iconify-icon icon="material-symbols:save" width="24" class="text-white"></iconify-icon>
+						<span class="hidden lg:block">{m.button_save()}</span>
+					</button>
+				{/if}
 
-				<!-- Show More toggle remains visible -->
 				<button
 					type="button"
 					onclick={() => (showMore = !showMore)}
@@ -270,12 +456,10 @@
 					<iconify-icon icon="material-symbols:filter-list-rounded" width="30"></iconify-icon>
 				</button>
 			{:else}
-				<!-- Mobile: Show More Inactive -->
 				<div class="flex-col items-center justify-center md:flex">
 					<TranslationStatus />
 				</div>
 
-				<!-- Save Content -->
 				{#if ['edit', 'create'].includes(mode.value)}
 					<button
 						type="button"
@@ -287,33 +471,16 @@
 						<iconify-icon icon="material-symbols:save" width="24" class="text-white"></iconify-icon>
 					</button>
 				{/if}
-				<!-- DropDown to show more Buttons -->
 				<button type="button" onclick={() => (showMore = !showMore)} aria-label="Show more actions" class="variant-ghost-surface btn-icon">
 					<iconify-icon icon="material-symbols:filter-list-rounded" width="30"></iconify-icon>
 				</button>
 			{/if}
-
-			<!-- Desktop specific buttons -->
 		{:else}
 			<div class="hidden flex-col items-center justify-center md:flex">
 				<TranslationStatus />
 			</div>
-			<!-- {#if ['edit', 'create'].includes(mode.value)} -->
-			<!-- 	<button -->
-			<!-- 		type="button" -->
-			<!-- 		onclick={saveData} -->
-			<!-- 		disabled={collection.value?.permissions?.[user.role]?.write === false} -->
-			<!-- 		class="variant-filled-tertiary btn dark:variant-filled-primary" -->
-			<!-- 		aria-label="Save entry" -->
-			<!-- 	> -->
-			<!-- 		<iconify-icon icon="material-symbols:save" width="24" class="text-white"></iconify-icon> -->
-			<!-- 		<span class="ml-1">{m.button_save()}</span> -->
-			<!-- 	</button> -->
-			<!-- {/if} -->
-			<!-- Desktop doesn't need the showMore toggle -->
 		{/if}
 
-		<!-- Common Cancel/Reload Buttons -->
 		{#if !headerActionButton.value}
 			<button type="button" onclick={handleCancel} aria-label="Cancel" class="variant-ghost-surface btn-icon">
 				<iconify-icon icon="material-symbols:close" width="24"></iconify-icon>
@@ -328,13 +495,11 @@
 
 {#if showMore}
 	<div class="-mx-2 mb-2 flex flex-col items-center justify-center gap-3 border-b pt-2">
-		<!-- Action Buttons -->
 		<div class="flex items-center justify-center gap-3">
 			<div class="flex flex-col items-center justify-center">
-				<!-- Delete Content -->
 				<button
 					type="button"
-					onclick={() => handleModifyEntry(statusMap.deleted)}
+					onclick={openDeleteModal}
 					disabled={collection.value?.permissions?.[user.role]?.delete === false}
 					class="gradient-error gradient-error-hover gradient-error-focus btn-icon"
 					aria-label="Delete entry"
@@ -343,13 +508,12 @@
 				</button>
 			</div>
 
-			<!-- Clone Content -->
 			{#if mode.value == 'edit'}
-				{#if collectionValue.value?.status == statusMap.unpublished}
+				{#if collectionValue.value?.status == statusMap.unpublish}
 					<div class="flex flex-col items-center justify-center">
 						<button
 							type="button"
-							onclick={() => handleModifyEntry(statusMap.published)}
+							onclick={openPublishModal}
 							disabled={!(collection.value?.permissions?.[user.role]?.write && collection.value?.permissions?.[user.role]?.create)}
 							class="gradient-tertiary gradient-tertiary-hover gradient-tertiary-focus btn-icon"
 							aria-label="Publish entry"
@@ -373,7 +537,7 @@
 					<div class="flex flex-col items-center justify-center">
 						<button
 							type="button"
-							onclick={() => handleModifyEntry(statusMap.unpublished)}
+							onclick={openUnpublishModal}
 							disabled={!collection.value?.permissions?.[user.role]?.write}
 							class="gradient-yellow gradient-yellow-hover gradient-yellow-focus btn-icon"
 							aria-label="Unpublish entry"
@@ -386,7 +550,7 @@
 				<div class="flex flex-col items-center justify-center">
 					<button
 						type="button"
-						onclick={() => handleModifyEntry(statusMap.cloned)}
+						onclick={openCloneModal}
 						disabled={!(collection.value?.permissions?.[user.role]?.write && collection.value?.permissions?.[user.role]?.create)}
 						aria-label="Clone entry"
 						class="gradient-secondary gradient-secondary-hover gradient-secondary-focus btn-icon"
@@ -397,9 +561,7 @@
 			{/if}
 		</div>
 
-		<!-- Info Section -->
 		<div class="w-full px-4">
-			<!-- Created At -->
 			<div class="mt-2 flex w-full flex-col items-start justify-center">
 				<p class="mb-1 text-sm">Created At</p>
 				<input
@@ -410,18 +572,18 @@
 				/>
 			</div>
 
-			<!-- Schedule Info -->
 			{#if schedule}
 				<div class="mt-2 text-sm text-tertiary-500">
-					Will be published on {new Date(schedule).toLocaleString()}
+					Will publish on: {new Date(schedule).toLocaleString()}
 				</div>
 			{/if}
 
-			<!-- User Info -->
 			<div class="mt-2 text-sm">
 				<p>Created by: {collectionValue.value?.createdBy || user.username}</p>
 				{#if collectionValue.value?.updatedBy}
-					<p class="text-tertiary-500">Last updated by {collectionValue.value.updatedBy}</p>
+					<p class="text-tertiary-500">
+						Last updated by: {collectionValue.value.updatedBy}
+					</p>
 				{/if}
 			</div>
 		</div>

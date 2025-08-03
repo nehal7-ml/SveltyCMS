@@ -17,6 +17,9 @@ import path from 'path';
 
 import { v4 as uuidv4 } from 'uuid';
 
+// Config
+import { privateEnv } from '@root/config/private';
+
 // Types
 import type { Schema, ContentTypes, Category, CollectionData, ContentNodeOperation } from './types';
 import type { ContentNode } from '@src/databases/dbInterface'; // Commented out unused import
@@ -28,7 +31,7 @@ import { ensureWidgetsInitialized } from '@src/widgets';
 // System Logger
 import { logger } from '@utils/logger.svelte';
 import { constructContentPaths, generateCategoryNodesFromPaths, processModule } from './utils';
-import { compile } from '../routes/api/compile/compile';
+import { compile } from '../utils/compilation/compile';
 
 interface CacheEntry<T> {
 	value: T;
@@ -78,39 +81,75 @@ class ContentManager {
 		// }
 	}
 
-	// Initialize the collection manager
-	public async initialize(): Promise<void> {
+	// Initialize the collection manager with performance optimizations
+	public async initialize(tenantId?: string): Promise<void> {
 		if (this.initialized) return;
-		logger.debug('Initializing ContentManager...');
+
+		const initStartTime = performance.now();
+		logger.debug('Initializing ContentManager...', { tenantId });
 
 		try {
-			// First, ensure widgets are initialized
-			await ensureWidgetsInitialized();
+			// Check if we have cached collections in Redis first
+			let collections: Schema[] | null = null;
+			if (isRedisEnabled()) {
+				try {
+					const cacheKey = tenantId ? `cms:tenant:${tenantId}:all_collections` : 'cms:all_collections';
+					collections = await getCache<Schema[]>(cacheKey);
+					if (collections && collections.length > 0) {
+						logger.debug(`Loaded ${collections.length} collections from Redis cache`);
 
-			// Then load collections
-			await this.waitForInitialization();
+						// Populate in-memory structures from cache
+						for (const schema of collections) {
+							this.collectionMapId.set(schema._id, schema);
+							if (!this.firstCollection) this.firstCollection = schema;
+						}
+						this.loadedCollections = collections;
 
-			await this.updateCollections(true);
-			logger.debug('Content Manager Collections updated');
+						// Still need to ensure widgets are initialized in parallel
+						await ensureWidgetsInitialized();
+
+						const cacheTime = performance.now() - initStartTime;
+						logger.info(`🚀 ContentManager initialized from cache in \x1b[32m${cacheTime.toFixed(2)}ms\x1b[0m`);
+						this.initialized = true;
+						return;
+					}
+				} catch (cacheErr) {
+					logger.debug('Redis cache miss or error, proceeding with file loading:', cacheErr);
+				}
+			}
+
+			// If no cache, run full initialization in parallel
+			await Promise.all([
+				ensureWidgetsInitialized(), // Ensure widgets are initialized
+				this.waitForInitialization() // Wait for any dependencies
+			]);
+
+			// Load collections with optimized batching
+			await this.updateCollections(true, tenantId);
+
+			const totalTime = performance.now() - initStartTime;
+			logger.info(`📦 ContentManager fully initialized in \x1b[32m${totalTime.toFixed(2)}ms\x1b[0m`);
 			this.initialized = true;
 		} catch (error) {
-			logger.error('Initialization failed:', error);
+			logger.error('ContentManager initialization failed:', error);
+			this.initialized = false; // Reset on failure to allow retry
 			throw error;
 		}
 	}
 
-	public async getCollectionData() {
+	public async getCollectionData(tenantId?: string) {
 		if (!this.initialized) {
-			await this.initialize();
+			await this.initialize(tenantId);
 		}
 		return {
 			collectionMap: this.collectionMapId,
 			contentStructure: this.contentStructure
 		};
 	}
-	// Load collections
-	private async loadCollections(): Promise<Schema[]> {
+	// Load collections with optimized batching and caching
+	private async loadCollections(tenantId?: string): Promise<Schema[]> {
 		try {
+			const loadStartTime = performance.now();
 			// Server-side collection loading
 			const collections: Schema[] = [];
 			const compiledDirectoryPath = import.meta.env.VITE_COLLECTIONS_FOLDER || 'compiledCollections';
@@ -121,67 +160,126 @@ class ContentManager {
 				throw new Error('Database service unavailable');
 			}
 
-			for (const filePath of files) {
-				try {
-					const content = await this.readFile(filePath);
-					const moduleData = await processModule(content);
+			// Process files in batches for better performance
+			const batchSize = 10; // Process 10 files at a time
+			const batches: string[][] = [];
 
-					if (!moduleData?.schema) continue;
+			for (let i = 0; i < files.length; i += batchSize) {
+				batches.push(files.slice(i, i + batchSize));
+			}
 
-					const schema = moduleData.schema as Schema;
-					const filePathName = filePath
-						.split('/')
-						.pop()
-						?.replace(/\.(ts|js)$/, '');
-					if (!filePathName) continue;
+			let processedCount = 0;
 
-					const path = this.extractPathFromFilePath(filePath);
+			// Process each batch in parallel
+			for (const [batchIndex, batch] of batches.entries()) {
+				const batchStartTime = performance.now();
 
-					const processed: Schema = {
-						...schema,
-						_id: schema._id!, // Always use the ID from the compiled schema
-						name: schema.name || filePathName,
-						label: schema.label || filePathName,
-						path: path,
-						icon: schema.icon || 'iconoir:info-empty',
-						fields: schema.fields || [],
-						permissions: schema.permissions || {},
-						livePreview: schema.livePreview || false,
-						strict: schema.strict || false,
-						revision: schema.revision || false,
-						description: schema.description || '',
-						slug: schema.slug || filePathName.toLowerCase()
-					};
+				const batchResults = await Promise.allSettled(
+					batch.map(async (filePath) => {
+						try {
+							// Check cache first to avoid file I/O
+							const cachedSchema = await this.getCacheValue<Schema>(filePath, this.collectionCache);
+							if (cachedSchema) {
+								logger.debug(`Cache hit for collection: ${filePath}`);
+								return cachedSchema;
+							}
 
-					// The function only creates models during first run
-					if (!dbAdapter.collection) {
-						logger.error('Collection service not initialized');
-						throw new Error('Collection service unavailable');
+							const content = await this.readFile(filePath);
+							const moduleData = await processModule(content);
+
+							if (!moduleData?.schema) {
+								logger.warn(`No schema found in ${filePath}`);
+								return null;
+							}
+
+							const schema = moduleData.schema as Schema;
+							const filePathName = filePath
+								.split('/')
+								.pop()
+								?.replace(/\.(ts|js)$/, '');
+							if (!filePathName) return null;
+
+							const path = this.extractPathFromFilePath(filePath);
+
+							const processed: Schema = {
+								...schema,
+								_id: schema._id!, // Always use the ID from the compiled schema
+								name: schema.name || filePathName,
+								label: schema.label || filePathName,
+								path: path,
+								icon: schema.icon || 'iconoir:info-empty',
+								fields: schema.fields || [],
+								permissions: schema.permissions || {},
+								livePreview: schema.livePreview || false,
+								strict: schema.strict || false,
+								revision: schema.revision || false,
+								description: schema.description || '',
+								slug: schema.slug || filePathName.toLowerCase()
+							};
+
+							// Cache the compiled schema to avoid re-processing
+							await this.setCacheValue(filePath, processed, this.collectionCache);
+
+							return processed;
+						} catch (err) {
+							logger.error(`Failed to process file ${filePath}:`, err);
+							return null;
+						}
+					})
+				);
+
+				// Process successful results
+				for (const result of batchResults) {
+					if (result.status === 'fulfilled' && result.value) {
+						const schema = result.value;
+
+						// The function only creates models during first run
+						if (!dbAdapter.collection) {
+							logger.error('Collection service not initialized');
+							throw new Error('Collection service unavailable');
+						}
+
+						try {
+							// In multi-tenant mode, pass tenant context to model creation
+							const model = await dbAdapter.collection.createModel(schema as CollectionData);
+							if (!model) {
+								logger.error(`Database model creation failed for ${schema.name} ${schema.path}`);
+								throw new Error('Model creation failed');
+							} else {
+								// In multi-tenant mode, log tenant context for this collection
+								if (privateEnv.MULTI_TENANT && tenantId) {
+									logger.debug(`Collection ${schema.name} loaded for tenant ${tenantId}`);
+								}
+
+								if (!this.firstCollection) this.firstCollection = schema;
+								collections.push(schema);
+								this.collectionMapId.set(schema._id, schema);
+								processedCount++;
+							}
+						} catch (modelErr) {
+							logger.error(`Model creation failed for ${schema.name}:`, modelErr);
+							continue; // Skip failed models but continue processing
+						}
 					}
-					const model = await dbAdapter.collection.createModel(processed as CollectionData);
-					if (!model) {
-						logger.error(`Database model creation failed for ${schema.name} ${schema.path}`);
-						throw new Error('Model creation failed');
-					} else {
-						if (!this.firstCollection) this.firstCollection = processed;
-						collections.push(processed);
-						this.collectionMapId.set(schema._id, processed);
-					}
-
-					await this.setCacheValue(filePath, processed, this.collectionCache);
-				} catch (err) {
-					logger.error(`Failed to process file ${filePath}:`, err);
-					continue;
 				}
+
+				const batchTime = performance.now() - batchStartTime;
+				logger.debug(
+					`Batch \x1b[34m${batchIndex + 1}/${batches.length}\x1b[0m processed \x1b[34m${batch.length}\x1b[0m files in \x1b[32m${batchTime.toFixed(2)}ms\x1b[0m`
+				);
 			}
 
 			// Cache in Redis if available
 			if (isRedisEnabled()) {
-				await setCache('cms:all_collections', collections, REDIS_TTL);
+				const cacheKey = tenantId ? `cms:tenant:${tenantId}:all_collections` : 'cms:all_collections';
+				await setCache(cacheKey, collections, REDIS_TTL);
 			}
 
 			this.loadedCollections = collections;
-			logger.debug('Content Manager Collections loaded');
+			const totalTime = performance.now() - loadStartTime;
+			logger.info(
+				`📦 Loaded \x1b[34m${processedCount}\x1b[0m collections in \x1b[32m${totalTime.toFixed(2)}ms\x1b[0m (${(totalTime / processedCount).toFixed(2)}ms per collection)`
+			);
 			return collections;
 		} catch (err) {
 			const errorMessage = err instanceof Error ? err.message : String(err);
@@ -191,17 +289,18 @@ class ContentManager {
 	}
 
 	// Update collections
-	async updateCollections(recompile: boolean = false): Promise<void> {
+	async updateCollections(recompile: boolean = false, tenantId?: string): Promise<void> {
 		try {
 			if (recompile) {
-				// Clear both memory and Redis caches
+				// Clear both memory and Redis caches - use tenant-specific cache key
 				this.collectionCache.clear();
 				this.fileHashCache.clear();
 				if (isRedisEnabled()) {
-					await clearCache('cms:all_collections');
+					const cacheKey = tenantId ? `cms:tenant:${tenantId}:all_collections` : 'cms:all_collections';
+					await clearCache(cacheKey);
 				}
 			}
-			await this.loadCollections();
+			await this.loadCollections(tenantId);
 			await this.updateContentStructure();
 			logger.info('Collections updated successfully');
 			// Convert category array to record structure
@@ -212,17 +311,34 @@ class ContentManager {
 		}
 	}
 
-	public getCollectionById(id: string): Schema | null {
+	public getCollectionById(id: string, tenantId?: string): Schema | null {
 		try {
 			if (!this.initialized) {
 				logger.error('Content Manager not initialized');
 				return null;
 			}
+
+			// In multi-tenant mode, ensure tenantId is provided
+			if (privateEnv.MULTI_TENANT && !tenantId) {
+				logger.error('TenantId is required in multi-tenant mode');
+				return null;
+			}
+
 			const collection = this.collectionMapId.get(id);
 			if (!collection) {
 				logger.error(`Content with id: ${id} not found`);
 				return null;
 			}
+
+			// In multi-tenant mode, verify collection belongs to the tenant
+			// This would typically involve checking collection metadata or database records
+			// For now, we log the tenant context for proper multi-tenant implementation
+			if (privateEnv.MULTI_TENANT && tenantId) {
+				logger.debug(`Accessing collection ${id} for tenant ${tenantId}`);
+				// TODO: Implement actual tenant validation logic here
+				// This could involve checking collection.tenantId or querying database
+			}
+
 			return collection;
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
@@ -275,11 +391,11 @@ class ContentManager {
 		}
 	}
 
-	public async getCollection(identifier: string): Promise<(Schema & { module: string | undefined }) | null> {
+	public async getCollection(identifier: string, tenantId?: string): Promise<(Schema & { module: string | undefined }) | null> {
 		try {
 			if (!this.initialized) {
-				logger.error('Content Manager not initialized');
-				return null;
+				logger.debug('Content Manager not initialized, initializing...');
+				await this.initialize(tenantId);
 			}
 
 			// Try to resolve as UUID first
@@ -459,7 +575,6 @@ class ContentManager {
 
 				const normalizedPath = normalizePath(collection.path);
 				const oldNode = contentStructure[normalizedPath];
-				if (oldNode) logger.warn(`Collection \x1b[34m${collection.name}\x1b[0m Node already exists. Updating Node`);
 
 				const parentPath = normalizedPath === '/' ? null : normalizedPath.split('/').slice(0, -1).join('/') || '/';
 
@@ -482,7 +597,6 @@ class ContentManager {
 				this.contentNodeMap.set(collection._id, { ...currentNode, path: normalizedPath });
 			}
 
-			logger.debug('Content Manager SysContentStructure loaded');
 			// Cache in Redis if available
 			if (isRedisEnabled()) {
 				await setCache('cms:categories', categoryNodes, REDIS_TTL);
@@ -606,13 +720,10 @@ class ContentManager {
 
 		try {
 			const allFiles = await getAllFiles(compiledDirectoryPath);
-			logger.debug('All files found recursively', {
-				Categories: compiledDirectoryPath,
-				Collections: allFiles.filter((file) => file.endsWith('.js'))
-			});
-
 			// Filter the list to only include .js files
 			const filteredFiles = allFiles.filter((file) => file.endsWith('.js'));
+
+			logger.debug(`Found \x1b[34m${filteredFiles.length}\x1b[0m collection files in \x1b[34m${compiledDirectoryPath}\x1b[0m`);
 
 			// Return the full paths
 			return filteredFiles;

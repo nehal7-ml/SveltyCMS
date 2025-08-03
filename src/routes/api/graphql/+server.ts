@@ -3,15 +3,14 @@
  * @description GraphQL API setup and request handler for the CMS.
  *
  * This module sets up the GraphQL schema and resolvers, including:
- * - Collection-specific schemas and resolvers
+ * - Collection-specific schemas and resolvers, scoped to the current tenant
  * - User-related schemas and resolvers
  * - Media-related schemas and resolvers
  * - Access management permission definition and checking
  */
 
 import { privateEnv } from '@root/config/private';
-import type { RequestHandler } from '@sveltejs/kit';
-import { json } from '@sveltejs/kit';
+import type { RequestHandler, RequestEvent } from '@sveltejs/kit';
 import { building } from '$app/environment';
 
 // GraphQL Yoga
@@ -24,7 +23,7 @@ import { dbAdapter } from '@src/databases/db';
 // Redis
 import { createClient } from 'redis';
 
-// Permission Management
+// Auth / Permission
 import { hasPermissionWithRoles, registerPermission } from '@src/auth/permissions';
 import { PermissionAction, PermissionType } from '@src/auth/types';
 
@@ -34,10 +33,7 @@ import { roles } from '@root/config/roles';
 // System Logger
 import { logger } from '@utils/logger.svelte';
 
-/**
- * Creates a clean GraphQL type name from collection info
- * Uses collection name + short UUID suffix for uniqueness and readability
- */
+// Creates a clean GraphQL type name from collection info
 function createCleanTypeName(collection: { name: string; _id: string }): string {
 	// Get the last part of the collection name (after any slashes)
 	const baseName = collection.name.split('/').pop() || collection.name;
@@ -86,7 +82,6 @@ if (!building && privateEnv.USE_REDIS === true) {
 		url: `redis://${privateEnv.REDIS_HOST}:${privateEnv.REDIS_PORT}`,
 		password: privateEnv.REDIS_PASSWORD
 	});
-
 	// Connect to Redis
 	redisClient.on('error', (err: Error) => {
 		logger.error('Redis error: ', err);
@@ -108,11 +103,11 @@ async function cleanupRedis() {
 }
 
 // Setup GraphQL schema and resolvers
-async function setupGraphQL() {
+async function setupGraphQL(tenantId?: string) {
 	try {
-		logger.info('Setting up GraphQL schema and resolvers');
+		logger.info('Setting up GraphQL schema and resolvers', { tenantId });
 
-		const { typeDefs: collectionsTypeDefs, collections } = await registerCollections();
+		const { typeDefs: collectionsTypeDefs, collections } = await registerCollections(tenantId);
 
 		const typeDefs = `
             input PaginationInput {
@@ -146,16 +141,15 @@ async function setupGraphQL() {
             }
         `;
 
-		//logger.debug('Generated GraphQL Schema:', typeDefs);
+		const collectionsResolversObj = await collectionsResolvers(cacheClient, privateEnv);
 
 		const resolvers = {
 			Query: {
-				...(await collectionsResolvers(cacheClient, privateEnv)),
+				...collectionsResolversObj.Query,
 				...userResolvers(dbAdapter),
 				...mediaResolvers(dbAdapter),
 				accessManagementPermission: async (_, __, context) => {
 					const { user } = context;
-					logger.debug('AccessManagementPermission resolver context:', { user });
 					if (!user) {
 						throw new Error('Unauthorized: No user in context');
 					}
@@ -165,7 +159,16 @@ async function setupGraphQL() {
 					}
 					return accessManagementPermission;
 				}
-			}
+			},
+			...Object.keys(collectionsResolversObj)
+				.filter((key) => key !== 'Query')
+				.reduce(
+					(acc, key) => {
+						acc[key] = collectionsResolversObj[key];
+						return acc;
+					},
+					{} as Record<string, Record<string, unknown>>
+				)
 		};
 
 		const yogaApp = createYoga<RequestHandler>({
@@ -176,8 +179,8 @@ async function setupGraphQL() {
 			graphqlEndpoint: '/api/graphql',
 			fetchAPI: globalThis,
 			context: async (event: RequestEvent) => {
-				logger.debug('GraphQL context:', { user: event.locals.user });
-				return { user: event.locals.user };
+				logger.debug('GraphQL context created', { userId: event.locals.user?._id, tenantId: event.locals.tenantId }); // Pass the user and tenantId to all resolvers
+				return { user: event.locals.user, tenantId: event.locals.tenantId };
 			}
 		});
 
@@ -189,33 +192,29 @@ async function setupGraphQL() {
 	}
 }
 
-let yogaAppPromise: Promise<ReturnType<typeof createYoga<RequestHandler>>>;
+let yogaAppPromise: Promise<ReturnType<typeof createYoga<RequestHandler>>> | null = null;
 
 const handler = async (event: RequestEvent) => {
-	if (!yogaAppPromise) {
-		yogaAppPromise = setupGraphQL();
-	}
-	try {
-		const yogaApp = await yogaAppPromise;
-		const response = await yogaApp.handleRequest(event.request, event);
-		logger.info('GraphQL request handled successfully', { status: response.status });
-		return new Response(response.body, {
-			status: response.status,
-			headers: response.headers
-		});
-		// return json({ success: true, output: "see src/ routes / api / graphql / +server.ts})" });
-	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
-		logger.error('Error handling GraphQL request:', { error: errorMessage });
-		return json({ success: false, error: `Error handling GraphQL request: ${errorMessage}` }, { status: 500 });
-	}
-};
+	const { locals } = event;
 
-// Ensure Redis is disconnected when the server shuts down
-if (!building && typeof process !== 'undefined') {
-	process.on('SIGINT', cleanupRedis);
-	process.on('SIGTERM', cleanupRedis);
-}
+	// Authentication is handled by hooks.server.ts
+	if (!locals.user) {
+		return new Response('Unauthorized', { status: 401 });
+	}
+
+	// Ensure Redis is disconnected when the server shuts down
+	if (!building && typeof process !== 'undefined') {
+		process.on('SIGINT', cleanupRedis);
+		process.on('SIGTERM', cleanupRedis);
+	}
+
+	// Initialize yogaAppPromise if not already done
+	if (!yogaAppPromise) {
+		yogaAppPromise = setupGraphQL(locals.tenantId);
+	}
+	const yogaApp = await yogaAppPromise;
+	return yogaApp.handleRequest(event);
+};
 
 // Export the handlers for GET and POST requests
 export { handler as GET, handler as POST };

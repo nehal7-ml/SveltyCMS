@@ -15,13 +15,14 @@
 -->
 
 <script lang="ts">
-	import type { PageData } from './$types';
+	import { privateEnv } from '@root/config/private';
+	import { invalidateAll } from '$app/navigation';
 	import axios from 'axios';
 	import { onMount } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
-
+	import type { PageData } from './$types';
 	// Auth
 	import type { User } from '@src/auth/types';
+	import TwoFactorAuth from './components/TwoFactorAuth.svelte';
 
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
@@ -30,26 +31,23 @@
 	import '@stores/store.svelte';
 	import { avatarSrc } from '@stores/store.svelte';
 	import { triggerActionStore } from '@utils/globalSearchIndex';
-
 	// Components
 	import PageTitle from '@components/PageTitle.svelte';
 	import PermissionGuard from '@components/PermissionGuard.svelte';
 	import AdminArea from './components/AdminArea.svelte';
-
 	// Skeleton
-	import { Avatar } from '@skeletonlabs/skeleton';
+	import type { ModalComponent, ModalSettings } from '@skeletonlabs/skeleton';
+	import { Avatar, getModalStore, getToastStore } from '@skeletonlabs/skeleton';
+	import { collection } from '@src/stores/collectionStore.svelte';
 	import ModalEditAvatar from './components/ModalEditAvatar.svelte';
 	import ModalEditForm from './components/ModalEditForm.svelte';
-	import { getToastStore, getModalStore } from '@skeletonlabs/skeleton';
-	import type { ModalComponent, ModalSettings } from '@skeletonlabs/skeleton';
-	import { collection } from '@src/stores/collectionStore.svelte';
 
 	const toastStore = getToastStore();
 	const modalStore = getModalStore();
 
 	// Props
 	let { data } = $props<{ data: PageData }>();
-	let { user: serverUser, isFirstUser } = $derived(data);
+	let { user: serverUser, isFirstUser, isMultiTenant } = $derived(data);
 
 	// Make user data reactive
 	let user = $derived<User>({
@@ -58,6 +56,7 @@
 		username: serverUser?.username ?? '',
 		role: serverUser?.role ?? '',
 		avatar: serverUser?.avatar ?? '/Default_User.svg',
+		tenantId: serverUser?.tenantId ?? '', // Add tenantId
 		permissions: []
 	});
 
@@ -84,16 +83,8 @@
 		}
 		collection.set(null);
 
-		// Initialize avatarSrc with user's actual avatar from database
-		// Use serverUser directly to avoid fallback values
-		if (serverUser?.avatar && serverUser.avatar !== '/Default_User.svg') {
-			avatarSrc.set(serverUser.avatar);
-			console.log('Avatar initialized from database:', serverUser.avatar);
-		} else {
-			// Set to default if no avatar in database
-			avatarSrc.set('/Default_User.svg');
-			console.log('Avatar set to default');
-		}
+		// Note: Avatar initialization is handled by the layout component
+		// to ensure consistent avatar state across the application
 	});
 
 	// Modal Trigger - User Form
@@ -143,9 +134,10 @@
 			title: m.usermodaluser_settingtitle(),
 			body: m.usermodaluser_settingbody(),
 			component: modalComponent,
-			response: async (r: { dataURL: string }) => {
+			response: async (r: any) => {
+				// Avatar is already updated by the ModalEditAvatar component
+				// No need to set avatarSrc here since the modal handles it
 				if (r) {
-					avatarSrc.set(r.dataURL);
 					const t = {
 						message: '<iconify-icon icon="radix-icons:avatar" color="white" width="26" class="mr-1"></iconify-icon> Avatar Updated',
 						background: 'gradient-primary',
@@ -153,7 +145,7 @@
 						classes: 'border-1 !rounded-md'
 					};
 					toastStore.trigger(t);
-					await invalidateAll(); // Reload the page data to get the updated user object
+					// invalidateAll is already called by the ModalEditAvatar component
 				}
 			}
 		};
@@ -204,6 +196,12 @@
 				<div class="gradient-tertiary badge w-full max-w-xs text-white">
 					{m.form_role()}:<span class="ml-2">{user?.role || 'N/A'}</span>
 				</div>
+				<!-- Tenant ID -->
+				{#if isMultiTenant}
+					<div class="gradient-primary badge w-full max-w-xs text-white">
+						Tenant ID:<span class="ml-2">{user?.tenantId || 'N/A'}</span>
+					</div>
+				{/if}
 				<!-- Permissions List -->
 				{#each user.permissions as permission}
 					<div class="gradient-primary badge mt-1 w-full max-w-xs text-white">
@@ -251,6 +249,13 @@
 		</div>
 	</div>
 
+	{#if privateEnv.USE_2FA}
+		<!-- Two-Factor Authentication Section -->
+		<div class="wrapper2 mb-4">
+			<TwoFactorAuth {user} />
+		</div>
+	{/if}
+
 	<!-- Admin area -->
 	<PermissionGuard
 		config={{
@@ -260,6 +265,7 @@
 			contextType: 'system',
 			description: 'Allows access to admin area for user management'
 		}}
+		silent={true}
 	>
 		<div class="wrapper2">
 			<AdminArea adminData={data.adminData} currentUser={user} />

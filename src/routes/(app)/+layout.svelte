@@ -1,8 +1,7 @@
 <!--
 @file src/routes/(app)/+layout.svelte
 @component
-**This component renders the entire app with improved loading strategy and dynamic theme management**
-
+**This component renders the main application layout with a persistent state for UI components.**
 ## Props:
 - `theme` {string} - The theme of the website
 
@@ -16,76 +15,74 @@
 -->
 
 <script lang="ts">
-	// Your selected theme:
+	// selected theme:
 	import '../../app.postcss';
 
 	// Icons from https://icon-sets.iconify.design/
 	import 'iconify-icon';
 
-	import { publicEnv } from '@root/config/public';
-	import { onMount, onDestroy } from 'svelte';
 	import { page } from '$app/state';
+	import { beforeNavigate, afterNavigate } from '$app/navigation';
+	import { publicEnv } from '@root/config/public';
+	import { onDestroy, onMount } from 'svelte';
 
 	// Auth
 	import type { User } from '@src/auth/types';
 
 	// Utils
-	import { getTextDirection } from '@utils/utils';
 	import { isSearchVisible } from '@utils/globalSearchIndex';
+	import { getTextDirection } from '@utils/utils';
 
 	// Stores
+	import { collections, contentStructure } from '@stores/collectionStore.svelte';
+	import { isDesktop, screenSize } from '@stores/screenSizeStore.svelte';
 	import { avatarSrc, systemLanguage } from '@stores/store.svelte';
-	import { contentStructure, collections } from '@stores/collectionStore.svelte';
 	import { uiStateManager } from '@stores/UIStore.svelte';
-	import { screenSize } from '@stores/screenSizeStore.svelte';
+	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
 
 	// Components
-	import Loading from '@components/Loading.svelte';
-	import SearchComponent from '@components/SearchComponent.svelte';
-	import LeftSidebar from '@components/LeftSidebar.svelte';
-	import RightSidebar from '@components/RightSidebar.svelte';
 	import HeaderEdit from '@components/HeaderEdit.svelte';
+	import LeftSidebar from '@components/LeftSidebar.svelte';
+	import Loading from '@components/Loading.svelte';
 	import PageFooter from '@components/PageFooter.svelte';
+	import RightSidebar from '@components/RightSidebar.svelte';
+	import SearchComponent from '@components/SearchComponent.svelte';
+	import FloatingNav from '@components/system/FloatingNav.svelte';
+
+	// Widgets
+	import { initializeWidgets } from '@src/widgets';
 
 	// Skeleton
-	import { initializeStores, Modal, Toast, setModeUserPrefers, setModeCurrent, setInitialClassState } from '@skeletonlabs/skeleton';
-
+	import { Modal, setInitialClassState, setModeCurrent, setModeUserPrefers, Toast } from '@skeletonlabs/skeleton';
 	// Required for popups to function
-	import { computePosition, autoUpdate, offset, shift, flip, arrow } from '@floating-ui/dom';
-	import { storePopup } from '@skeletonlabs/skeleton';
+	import { arrow, autoUpdate, computePosition, flip, offset, shift } from '@floating-ui/dom';
 	import type { ContentNode } from '@root/src/databases/dbInterface';
+	import { storePopup } from '@skeletonlabs/skeleton';
 
 	storePopup.set({ computePosition, autoUpdate, offset, shift, flip, arrow });
-	initializeStores();
 
 	interface Props {
 		children?: import('svelte').Snippet;
 		data: {
 			user: User;
 			contentStructure: ContentNode[];
-			contentLanguage: string;
-			systemLanguage: string;
 		};
 	}
 
 	let { children, data }: Props = $props();
 
 	// State variables
-	let isLoading = $state(true);
 	let isCollectionsLoaded = $state(false);
-	let isNonCriticalDataLoaded = $state(false);
 	let loadError = $state<Error | null>(null);
 	let mediaQuery: MediaQueryList;
 
-	// Update collection loaded state when contentStructure or collections change
-	$effect(() => {
-		// Check if we have contentStructure data OR collections data
-		const hasContentStructure = contentStructure.value && contentStructure.value.length > 0;
-		const hasCollections = collections.value && Object.keys(collections.value).length > 0;
+	// Derived state for showing loading
+	let shouldShowLoading = $derived(!isCollectionsLoaded || globalLoadingStore.isLoading);
 
-		if (hasContentStructure || hasCollections) {
+	// Set isCollectionsLoaded to true once the initial data is available.
+	$effect(() => {
+		if (data.contentStructure && data.contentStructure.length > 0) {
 			isCollectionsLoaded = true;
-			isLoading = false;
 		}
 	});
 
@@ -106,19 +103,10 @@
 		try {
 			//console.log('contentStructure', data.contentStructure);
 			contentStructure.set(data.contentStructure);
-			isCollectionsLoaded = true;
-			isLoading = false;
 		} catch (error) {
 			console.error('Error loading collections:', error);
 			loadError = error instanceof Error ? error : new Error('Unknown error occurred while loading collections');
-			isLoading = false; // Stop loading even if there's an error
 		}
-	}
-
-	// Function to load non-critical data
-	async function loadNonCriticalData() {
-		await new Promise((resolve) => setTimeout(resolve, 2000));
-		isNonCriticalDataLoaded = true;
 	}
 
 	// Theme management
@@ -156,6 +144,7 @@
 				avatarSrc.set(data.user.avatar);
 			} else {
 				avatarSrc.set('/Default_User.svg');
+				console.log('Layout: Avatar set to default, user avatar was:', data.user.avatar);
 			}
 		}
 
@@ -164,7 +153,27 @@
 
 		// Initialize data
 		initializeCollections();
-		loadNonCriticalData();
+	});
+
+	// Navigation loading handlers
+	beforeNavigate(({ from, to }) => {
+		// Only show loading for actual page changes, not hash changes
+		if (from && to && from.route.id !== to.route.id) {
+			globalLoadingStore.startLoading(loadingOperations.navigation);
+		}
+	});
+
+	afterNavigate(() => {
+		// Stop navigation loading
+		globalLoadingStore.stopLoading(loadingOperations.navigation);
+
+		// Clear any stale loading operations after navigation
+		setTimeout(() => {
+			// Only clear if no other operations are running
+			if (globalLoadingStore.loadingStack.size === 1 && globalLoadingStore.isLoadingReason(loadingOperations.navigation)) {
+				globalLoadingStore.stopLoading(loadingOperations.navigation);
+			}
+		}, 100);
 	});
 
 	onDestroy(() => {
@@ -206,21 +215,41 @@
 </svelte:head>
 
 {#if loadError}
-	<div class="text-error-500">
-		An error occurred: {loadError.message}
-	</div>
-{:else if !isCollectionsLoaded}
-	<div class="flex h-lvh items-center justify-between lg:justify-start">
-		<Loading />
-	</div>
+	<div class="text-error-500">An error occurred: {loadError.message}</div>
 {:else}
-	<!-- hack as root +layout cannot be overwritten ? -->
-	{#if page.url.pathname === '/login'}
-		{@render children?.()}
-	{:else}
+	<!-- This outer div is a good container for overlays -->
+	<div class="relative h-lvh w-full">
+		<!-- Background and Overlay components live here, outside the main content flow -->
+		{#if shouldShowLoading}
+			<Loading
+				customTopText={!isCollectionsLoaded
+					? 'Initializing'
+					: globalLoadingStore.loadingReason === loadingOperations.navigation
+						? 'Navigating'
+						: globalLoadingStore.loadingReason === loadingOperations.dataFetch
+							? 'Loading data'
+							: globalLoadingStore.loadingReason === loadingOperations.authentication
+								? 'Authenticating'
+								: globalLoadingStore.loadingReason === loadingOperations.initialization
+									? 'Initializing'
+									: globalLoadingStore.loadingReason === loadingOperations.formSubmission
+										? 'Submitting'
+										: 'Loading'}
+				customBottomText={!isCollectionsLoaded ? 'Loading application...' : 'Please wait'}
+			/>
+		{/if}
+		{#if !isDesktop}
+			<FloatingNav />
+		{/if}
+		<Toast />
+		<Modal />
+		{#if $isSearchVisible}
+			<SearchComponent />
+		{/if}
+
 		<!-- Body -->
-		<div class="flex h-lvh flex-col">
-			<!-- Header (unsused)  -->
+		<div class="flex h-lvh flex-col overflow-hidden">
+			<!-- Header (unused) -->
 			{#if uiStateManager.uiState.value.header !== 'hidden'}
 				<header class="sticky top-0 z-10 bg-tertiary-500">Header</header>
 			{/if}
@@ -238,48 +267,23 @@
 				{/if}
 
 				<!-- Content Area -->
-				<main class="relative w-full flex-1">
+				<main class="relative z-0 flex w-full min-w-0 flex-1 flex-col">
 					<!-- Page Header -->
 					{#if uiStateManager.uiState.value.pageheader !== 'hidden'}
-						<header class="sticky top-0 z-10 w-full">
-							<HeaderEdit />
-						</header>
+						<header class="sticky top-0 w-full"><HeaderEdit /></header>
 					{/if}
 
 					<!-- Router Slot -->
 					<div
 						role="main"
-						class="relative h-full flex-grow overflow-auto {uiStateManager.uiState.value.leftSidebar === 'full' ? 'mx-2' : 'mx-1'} {$screenSize ===
-						'LG'
-							? 'mb-2'
-							: 'mb-16'}"
+						class="relative flex-1 {uiStateManager.uiState.value.leftSidebar === 'full' ? 'mx-2' : 'mx-1'} {$screenSize === 'LG' ? 'mb-2' : 'mb-16'}"
 					>
-						<Toast />
-						<Modal />
-
-						<!-- Show globalSearchIndex  -->
-						{#if $isSearchVisible}
-							<SearchComponent />
-						{/if}
-
-						{#if isLoading}
-							<div class="flex h-screen items-center justify-center">
-								<Loading />
-							</div>
-						{:else}
-							{@render children?.()}
-						{/if}
-
-						{#if isNonCriticalDataLoaded}
-							<!-- Non-critical data components -->
-						{/if}
+						{@render children?.()}
 					</div>
 
-					<!-- Page Footer -->
+					<!-- Page Footer (Mobile Nav) -->
 					{#if uiStateManager.uiState.value.pagefooter !== 'hidden'}
-						<footer
-							class="sticky left-0 top-[calc(100%-51px)] z-10 w-full bg-surface-50 bg-gradient-to-b px-1 text-center dark:from-surface-700 dark:to-surface-900"
-						>
+						<footer class="mt-auto w-full bg-surface-50 bg-gradient-to-b px-1 text-center dark:from-surface-700 dark:to-surface-900">
 							<PageFooter />
 						</footer>
 					{/if}
@@ -295,10 +299,10 @@
 				{/if}
 			</div>
 
-			<!-- Footer (unsused) -->
+			<!-- Footer (unused) -->
 			{#if uiStateManager.uiState.value.footer !== 'hidden'}
 				<footer class="bg-blue-500">Footer</footer>
 			{/if}
 		</div>
-	{/if}
+	</div>
 {/if}

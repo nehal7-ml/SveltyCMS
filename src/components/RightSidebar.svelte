@@ -24,52 +24,67 @@ This component provides a streamlined interface for managing collection entries 
 -->
 
 <script lang="ts">
-	import { saveFormData } from '../utils/data';
+	// Correctly import the new, direct action handlers
+	import { cloneCurrentEntry, deleteCurrentEntry, saveEntry } from '../utils/entryActions';
+
+	// Import StatusTypes for centralized status management
+	import { StatusTypes } from '@src/content/types';
 
 	// Stores
 	import { page } from '$app/state';
 	import { saveLayerStore, shouldShowNextButton, validationStore } from '@stores/store.svelte';
-	import { collection, mode, modifyEntry, collectionValue } from '@stores/collectionStore.svelte';
+	import { collection, mode, collectionValue } from '@stores/collectionStore.svelte';
 	import { handleUILayoutToggle } from '@stores/UIStore.svelte';
 
 	// Utils & Components
-	import { convertTimestampToDateString } from '@utils/utils';
 	import Toggles from './system/inputs/Toggles.svelte';
-	import ScheduleModal from './ScheduleModal.svelte';
-
-	// ParaglideJS
+	import ScheduleModal from './collectionDisplay/ScheduleModal.svelte';
 	import * as m from '@src/paraglide/messages';
 	import { getLocale } from '@src/paraglide/runtime';
 
-	// Skeleton
 	// Skeleton
 	import { getToastStore, getModalStore } from '@skeletonlabs/skeleton';
 	import type { ModalComponent, ModalSettings } from '@skeletonlabs/skeleton';
 	const toastStore = getToastStore();
 	const modalStore = getModalStore();
 
-	const { user } = page.data; // Use reactive $page store
+	const { user } = page.data;
 
-	// --- State Management with Svelte 5 Runes ---
+	// --- Wrapper functions for event handlers ---
+	const handleCloneEntry = () => cloneCurrentEntry(modalStore, toastStore);
+	const handleDeleteEntry = () => deleteCurrentEntry(modalStore, toastStore);
 
-	// Reactive state for UI elements, derived from the collectionValue store.
-	let isPublished = $state(false);
+	// --- State Management ---
+	let isPublish = $state(false);
 	let schedule = $state('');
 
-	// Effect to synchronize local state when the authoritative store changes.
 	$effect(() => {
 		const cv = collectionValue.value;
-		isPublished = cv?.status === 'published';
+		isPublish = cv?.status === StatusTypes.publish;
 		schedule = cv?._scheduled ? new Date(Number(cv._scheduled)).toISOString().slice(0, 16) : '';
 	});
 
-	// Derived state for formatting timestamps. This is robust against null/undefined values.
 	let dates = $derived({
-		created: convertTimestampToDateString(typeof collectionValue.value?.createdAt === 'number' ? collectionValue.value.createdAt : 0),
-		updated: convertTimestampToDateString(typeof collectionValue.value?.updatedAt === 'number' ? collectionValue.value.updatedAt : 0)
+		created: collectionValue.value?.createdAt
+			? new Date(String(collectionValue.value.createdAt)).toLocaleDateString(getLocale(), {
+					year: 'numeric',
+					month: '2-digit',
+					day: '2-digit',
+					hour: '2-digit',
+					minute: '2-digit'
+				})
+			: '-',
+		updated: collectionValue.value?.updatedAt
+			? new Date(String(collectionValue.value.updatedAt)).toLocaleDateString(getLocale(), {
+					year: 'numeric',
+					month: '2-digit',
+					day: '2-digit',
+					hour: '2-digit',
+					minute: '2-digit'
+				})
+			: '-'
 	});
 
-	// Setup next button functionality
 	let next = $state(() => {});
 	$effect(() => {
 		const unsub = saveLayerStore.subscribe((value) => {
@@ -79,13 +94,8 @@ This component provides a streamlined interface for managing collection entries 
 		return unsub;
 	});
 
-	// Modal Trigger - Schedule
 	function openScheduleModal(): void {
-		const modalComponent: ModalComponent = {
-			ref: ScheduleModal,
-			slot: '<p>Edit Form</p>'
-		};
-
+		const modalComponent: ModalComponent = { ref: ScheduleModal };
 		const modalSettings: ModalSettings = {
 			type: 'component',
 			title: 'Scheduler',
@@ -97,7 +107,7 @@ This component provides a streamlined interface for managing collection entries 
 					if (r.action === 'schedule') {
 						collectionValue.update((cv) => ({
 							...cv,
-							status: 'scheduled',
+							status: StatusTypes.schedule,
 							_scheduled: new Date(r.date).getTime()
 						}));
 					}
@@ -107,66 +117,39 @@ This component provides a streamlined interface for managing collection entries 
 		modalStore.trigger(modalSettings);
 	}
 
-	// Function to toggle the status
 	function toggleStatus() {
-		isPublished = !isPublished;
+		isPublish = !isPublish;
 		collectionValue.update((cv) => ({
 			...cv,
-			status: isPublished ? 'published' : 'unpublished',
+			status: isPublish ? StatusTypes.publish : StatusTypes.unpublish,
 			updatedAt: new Date()
 		}));
 	}
 
 	async function saveData() {
-		// Use the reactive validation store; no need to re-validate here.
 		if (!validationStore.isValid) {
 			console.warn('Save blocked due to validation errors.');
 			return;
 		}
-
-		// Use a snapshot of the current reactive store values for saving.
-		const currentCollection = collection.value;
 		const dataToSave = { ...collectionValue.value };
 
-		if (!currentCollection) return;
-
-		// Add or update system fields
+		// Set metadata for all saves
 		if (mode.value === 'create') {
 			dataToSave.createdBy = user?.username ?? 'system';
 		}
 		dataToSave.updatedBy = user?.username ?? 'system';
 
-		// Handle schedule information
+		// Handle scheduling if set
 		if (schedule && schedule.trim() !== '') {
 			dataToSave._scheduled = new Date(schedule).getTime();
 		} else {
 			delete dataToSave._scheduled;
 		}
 
-		// Save data
-		try {
-			await saveFormData({
-				data: dataToSave, // Pass the plain object directly
-				_collection: currentCollection,
-				_mode: mode.value,
-				id: dataToSave._id as string | undefined,
-				user
-			});
-			// Consistent state management with HeaderEdit
-			mode.set('view');
-			handleUILayoutToggle();
-		} catch (err) {
-			console.error('Failed to save data:', err);
-			// Erorr Toast
-			toastStore.trigger({
-				message: 'Failed to save data',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
-		}
+		await saveEntry(dataToSave, toastStore, isPublish);
+		handleUILayoutToggle();
 	}
 
-	// --- Derived values for template ---
 	const canWrite = $derived(collection.value?.permissions?.[user.role]?.write !== false);
 	const canCreate = $derived(collection.value?.permissions?.[user.role]?.create !== false);
 	const canDelete = $derived(collection.value?.permissions?.[user.role]?.delete !== false);
@@ -190,7 +173,7 @@ This component provides a streamlined interface for managing collection entries 
 					class:opacity-50={!validationStore.isValid || !canWrite}
 					class:cursor-not-allowed={!validationStore.isValid || !canWrite}
 					aria-label="Save entry"
-					title={validationStore.isValid ? 'Save changes' : 'Please fix validation errors before saving'}
+					title={validationStore.isValid() ? 'Save changes' : 'Please fix validation errors before saving'}
 				>
 					<iconify-icon icon="material-symbols:save" width="20" class="font-extrabold text-white"></iconify-icon>
 					{m.button_save()}
@@ -198,11 +181,11 @@ This component provides a streamlined interface for managing collection entries 
 
 				<div class="gradient-secondary btn w-full gap-2 shadow-md">
 					<Toggles
-						label={isPublished ? m.status_published() : m.status_unpublished()}
-						labelColor={isPublished ? 'text-primary-500' : 'text-error-500'}
+						label={isPublish ? m.status_publish() : m.status_unpublish()}
+						labelColor={isPublish ? 'text-primary-500' : 'text-error-500'}
 						iconOn="ic:baseline-check-circle"
 						iconOff="material-symbols:close"
-						bind:value={isPublished}
+						bind:value={isPublish}
 						onChange={toggleStatus}
 					/>
 				</div>
@@ -211,7 +194,7 @@ This component provides a streamlined interface for managing collection entries 
 					<div class="flex w-full flex-col gap-2">
 						<button
 							type="button"
-							onclick={modifyEntry}
+							onclick={handleCloneEntry}
 							disabled={!canCreate}
 							class="gradient-secondary gradient-secondary-hover btn w-full gap-2 text-white shadow-md transition-all duration-200"
 							aria-label="Clone entry"
@@ -222,7 +205,7 @@ This component provides a streamlined interface for managing collection entries 
 
 						<button
 							type="button"
-							onclick={modifyEntry}
+							onclick={handleDeleteEntry}
 							disabled={!canDelete}
 							class="variant-filled-error btn w-full gap-2 shadow-md transition-all duration-200 hover:shadow-lg"
 							aria-label="Delete entry"
@@ -243,9 +226,7 @@ This component provides a streamlined interface for managing collection entries 
 
 				<div class="space-y-2">
 					{#if schedule}
-						<p class="text-sm font-medium text-surface-600 dark:text-surface-300">
-							{m.sidebar_will_publish_on()}
-						</p>
+						<p class="text-sm font-medium text-surface-600 dark:text-surface-300">{m.sidebar_will_publish_on()}</p>
 					{/if}
 					<button
 						onclick={openScheduleModal}
@@ -259,30 +240,16 @@ This component provides a streamlined interface for managing collection entries 
 					</button>
 				</div>
 
-				<div class="space-y-2">
-					<label for="creation-date-input" class="text-sm font-medium">
-						{m.adminarea_createat()}
-					</label>
-					<input
-						id="creation-date-input"
-						type="text"
-						value={dates.created}
-						class="input variant-filled-surface w-full text-sm"
-						aria-label="Creation date"
-						readonly
-						tabindex="-1"
-					/>
-				</div>
-
-				<!-- User Info -->
 				<div class="space-y-3">
 					<div class="space-y-1">
-						<p class="text-sm font-medium">
-							{m.sidebar_createdby()}
-						</p>
+						<p class="text-sm font-medium">{m.sidebar_createdby()}</p>
 						<div class="variant-filled-surface rounded-lg p-3 text-center">
 							<span class="text-sm font-semibold text-tertiary-500 dark:text-primary-500">
-								{collectionValue.value?.createdBy || user.username}
+								{#if user?.username}
+									<div class="-ml-1.5">
+										{user?.username}
+									</div>
+								{/if}
 							</span>
 						</div>
 					</div>
@@ -292,7 +259,11 @@ This component provides a streamlined interface for managing collection entries 
 							<p class="text-sm font-medium text-surface-600 dark:text-surface-300">Last updated by</p>
 							<div class="variant-filled-surface rounded-lg p-3 text-center">
 								<span class="text-sm font-semibold text-tertiary-500 dark:text-primary-500">
-									{collectionValue.value.updatedBy}
+									{#if user?.username}
+										<div class="-ml-1.5">
+											{user?.username}
+										</div>
+									{/if}
 								</span>
 							</div>
 						</div>

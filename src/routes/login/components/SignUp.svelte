@@ -72,6 +72,8 @@ Features:
 	let response = $state<any>(undefined);
 	let formElement = $state<HTMLFormElement | null>(null);
 	let showPassword = $state(false);
+	let isSubmitting = $state(false);
+	let isRedirecting = $state(false);
 
 	// Pre-calculate tab indices
 	const usernameTabIndex = 1;
@@ -81,7 +83,7 @@ Features:
 	const tokenTabIndex = 5;
 
 	// Form setup with Svelte 5 optimizations
-	const { form, constraints, allErrors, errors, enhance, delayed } = superForm(FormSchemaSignUp, {
+	const { form, constraints, allErrors, errors, enhance } = superForm(FormSchemaSignUp, {
 		id: 'signup',
 		// Clear form on success.
 		resetForm: true,
@@ -95,13 +97,31 @@ Features:
 		onSubmit: ({ cancel }) => {
 			if ($allErrors.length > 0) {
 				cancel();
+				return;
 			}
+
+			// Set submitting state for better UX
+			isSubmitting = true;
 		},
 
 		onResult: ({ result, cancel }) => {
+			// Reset submitting state
+			isSubmitting = false;
+
 			if (result.type == 'redirect') {
+				// Set redirecting state for brief period
+				isRedirecting = true;
+
+				// Clear redirecting state after brief delay to allow redirect
+				setTimeout(() => {
+					isRedirecting = false;
+				}, 1000);
+
 				return;
 			}
+
+			// Reset redirecting state on non-redirect
+			isRedirecting = false;
 			cancel();
 
 			// add wiggle animation to form element
@@ -116,24 +136,18 @@ Features:
 		}
 	});
 
-	// Derived form values
-	const formValues = $derived({
-		username: $form.username || '',
-		email: $form.email || '',
-		password: $form.password || '',
-		confirm_password: $form.confirm_password || '',
-		token: $form.token || ''
-	});
+	// Reactive form values for easier access
+	const currentFormToken = $derived($form.token);
 
 	// URL parameter handling - update params when URL changes
 	const params = $derived(browser ? new URL(window.location.href).searchParams : new URLSearchParams(''));
 
 	// Initialize form with invite data when in invite flow
 	$effect(() => {
-		if (isInviteFlow && invitedEmail) {
+		if (isInviteFlow && invitedEmail && $form.email !== invitedEmail) {
 			$form.email = invitedEmail;
 		}
-		if (isInviteFlow && token) {
+		if (isInviteFlow && token && $form.token !== token) {
 			$form.token = token;
 		}
 		// Handle URL parameters for invite tokens (both new and legacy formats)
@@ -145,8 +159,8 @@ Features:
 			}
 		}
 		// Also check if the form was pre-filled by the server (invalid token case)
-		if (browser && formValues.token && !isInviteFlow) {
-			console.log('Form token pre-filled by server:', formValues.token);
+		if (browser && $form.token && !isInviteFlow) {
+			console.log('Form token pre-filled by server:', $form.token);
 		}
 	});
 
@@ -155,7 +169,7 @@ Features:
 		// Check if user needs an invitation token
 		// First user (!firstUserExists) should NOT require a token
 		// Only existing users (firstUserExists) without an invite flow or token should be blocked
-		if (!isInviteFlow && firstUserExists && !hasExistingOAuthUsers && !formValues.token) {
+		if (!isInviteFlow && firstUserExists && !hasExistingOAuthUsers && !currentFormToken) {
 			// Show a helpful message
 			alert(
 				'⚠️ Please enter your invitation token first before using Google OAuth signup. Both email/password and OAuth registration require an invitation from an administrator.'
@@ -170,9 +184,9 @@ Features:
 		if (isInviteFlow && token) {
 			// Build the action URL with the invite token as a query parameter
 			form.action = `?/signInOAuth&invite_token=${encodeURIComponent(token)}`;
-		} else if (formValues.token) {
+		} else if (currentFormToken) {
 			// User has entered a token in the form, pass it along
-			form.action = `?/signInOAuth&invite_token=${encodeURIComponent(formValues.token)}`;
+			form.action = `?/signInOAuth&invite_token=${encodeURIComponent(currentFormToken)}`;
 		} else {
 			form.action = '?/signInOAuth';
 		}
@@ -268,7 +282,7 @@ Features:
 						type="text"
 						tabindex={usernameTabIndex}
 						required
-						value={formValues.username}
+						bind:value={$form.username}
 						label={m.form_username()}
 						{...$constraints.username}
 						icon="mdi:user-circle"
@@ -276,7 +290,6 @@ Features:
 						textColor="white"
 						inputClass="text-white"
 						autocomplete="on"
-						onInput={(value) => ($form.username = value)}
 					/>
 					{#if $errors.username}<span class="text-xs text-error-500">{$errors.username}</span>{/if}
 
@@ -287,7 +300,7 @@ Features:
 						type="email"
 						tabindex={emailTabIndex}
 						required
-						value={formValues.email}
+						bind:value={$form.email}
 						label={m.form_emailaddress()}
 						{...$constraints.email}
 						icon="mdi:email"
@@ -296,10 +309,14 @@ Features:
 						inputClass="text-white {isInviteFlow ? 'opacity-70' : ''}"
 						autocomplete="on"
 						disabled={isInviteFlow}
-						onInput={(value) => !isInviteFlow && ($form.email = value)}
 					/>
 					{#if $errors.email}<span class="text-xs text-error-500">{$errors.email}</span>{/if}
 					{#if isInviteFlow}<span class="text-xs text-primary-400">✓ Email pre-filled from invitation</span>{/if}
+
+					<!-- Hidden email input to ensure form submission when disabled -->
+					{#if isInviteFlow}
+						<input type="hidden" name="email" value={$form.email} />
+					{/if}
 
 					<!-- Password field -->
 					<FloatingInput
@@ -308,7 +325,7 @@ Features:
 						type="password"
 						tabindex={passwordTabIndex}
 						required
-						value={formValues.password}
+						bind:value={$form.password}
 						{showPassword}
 						label={m.form_password()}
 						{...$constraints.password}
@@ -318,7 +335,6 @@ Features:
 						showPasswordBackgroundColor="dark"
 						inputClass="text-white"
 						autocomplete="on"
-						onInput={(value) => ($form.password = value)}
 					/>
 					{#if $errors.password}
 						<span class="text-xs text-error-500">{$errors.password}</span>
@@ -331,7 +347,7 @@ Features:
 						type="password"
 						tabindex={confirmPasswordTabIndex}
 						required
-						value={formValues.confirm_password}
+						bind:value={$form.confirm_password}
 						{showPassword}
 						label={m.form_confirmpassword()}
 						{...$constraints.confirm_password}
@@ -341,14 +357,13 @@ Features:
 						showPasswordBackgroundColor="dark"
 						inputClass="text-white"
 						autocomplete="on"
-						onInput={(value) => ($form.confirm_password = value)}
 					/>
 					{#if $errors.confirm_password}
 						<span class="text-xs text-error-500">{$errors.confirm_password}</span>
 					{/if}
 
 					<!-- Password Strength Indicator -->
-					<PasswordStrength password={formValues.password} confirmPassword={formValues.confirm_password} />
+					<PasswordStrength password={$form.password} confirmPassword={$form.confirm_password} />
 
 					{#if firstUserExists == true && !isInviteFlow}
 						<!-- Registration Token (hidden when using invite flow) -->
@@ -358,7 +373,7 @@ Features:
 							type="password"
 							tabindex={tokenTabIndex}
 							required
-							value={formValues.token}
+							bind:value={$form.token}
 							label={m.signup_registrationtoken()}
 							{...$constraints.token}
 							icon="mdi:key-chain"
@@ -367,13 +382,12 @@ Features:
 							showPasswordBackgroundColor="dark"
 							inputClass="text-white"
 							autocomplete="off"
-							onInput={(value) => ($form.token = value)}
 						/>
 						{#if $errors.token}
 							<span class="text-xs text-error-500">{$errors.token}</span>
 						{/if}
-						{#if formValues.token && inviteError}
-							<span class="text-xs text-warning-400">⚠️ Token was pre-filled from URL and will validated against the server</span>
+						{#if $form.token && inviteError}
+							<span class="text-xs text-warning-400">⚠️ Token was pre-filled from URL and will be validated against the server</span>
 						{/if}
 					{:else if isInviteFlow}
 						<!-- Hidden token field for invite flow -->
@@ -385,7 +399,7 @@ Features:
 						<span class="text-xs text-error-500">{response}</span>
 					{/if}
 
-					{#if inviteError && !formValues.token}
+					{#if inviteError && !$form.token}
 						<span class="text-xs text-error-500">{inviteError}</span>
 					{/if}
 
@@ -393,7 +407,7 @@ Features:
 						<!-- Email SignIn only -->
 						<button type="submit" class="variant-filled btn mt-4 uppercase" aria-label={isInviteFlow ? 'Accept Invitation' : m.form_signup()}>
 							{isInviteFlow ? 'Accept Invitation & Create Account' : m.form_signup()}
-							{#if $delayed}<img src="/Spinner.svg" alt="Loading.." class="ml-4 h-6" />{/if}
+							{#if isSubmitting || isRedirecting}<img src="/Spinner.svg" alt="Loading.." class="ml-4 h-6" />{/if}
 						</button>
 
 						<!-- Email + OAuth signin  -->
@@ -408,7 +422,7 @@ Features:
 									{isInviteFlow ? 'Accept Invitation' : m.form_signup()}
 								</span>
 								<!-- Loading indicators -->
-								{#if $delayed}<img src="/Spinner.svg" alt="Loading.." class="ml-4 h-6" />{/if}
+								{#if isSubmitting || isRedirecting}<img src="/Spinner.svg" alt="Loading.." class="ml-4 h-6" />{/if}
 							</button>
 
 							<button type="button" onclick={handleOAuth} aria-label="OAuth" class="btn flex w-1/4 items-center justify-center">

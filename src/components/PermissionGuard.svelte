@@ -8,14 +8,21 @@
 	<ContentToProtect />
 </PermissionGuard>
 
+@example Silent mode (no error messages)
+<PermissionGuard {config} silent={true}>
+	<ContentToProtect />
+</PermissionGuard>
+
 #### Props:
 - `config`: Permission configuration object
 - `messages`: Custom messages for different scenarios
+- `silent`: If true, don't show error messages when permission is denied (default: false)
 
 Features:
 - Checks user permissions based on provided configuration
 - Handles admin roles, regular permissions, and rate limiting
 - Provides fallback content for missing configurations or insufficient permissions
+- Silent mode for security-sensitive components that shouldn't reveal their existence
 - Improved type safety and error handling
 -->
 
@@ -34,6 +41,7 @@ Features:
 			missingConfig?: string;
 			insufficientPermissions?: string;
 		};
+		silent?: boolean; // If true, don't show error messages when permission is denied
 		children?: import('svelte').Snippet;
 	}
 
@@ -45,6 +53,7 @@ Features:
 			missingConfig: 'Permission configuration is missing.',
 			insufficientPermissions: 'You do not have permission to access this content.'
 		},
+		silent = false,
 		children
 	}: Props = $props();
 
@@ -52,43 +61,27 @@ Features:
 	let loading = $state(false);
 	let user = $derived(page.data.user as User | undefined);
 	let permissions = $derived((page.data.permissions || {}) as Record<string, { hasPermission: boolean; isRateLimited: boolean }>);
+	let isAdmin = $derived(page.data.isAdmin as boolean | undefined);
 	let permissionData = $derived(
 		config?.contextId
 			? permissions[config.contextId] || { hasPermission: false, isRateLimited: false }
 			: { hasPermission: false, isRateLimited: false }
 	);
-	let isAdmin = $derived(user?.role?.toLowerCase() === 'admin');
-	let hasPermission = $derived(isAdmin || permissionData.hasPermission);
+	let hasPermission = $derived(!!isAdmin || permissionData.hasPermission);
 	let isRateLimited = $derived(permissionData.isRateLimited);
 
 	// Final determination if content should be shown
 	let shouldShowContent = $derived(!!config && hasPermission && !isRateLimited && !loading);
-
-	// $effect(() => {
-	// 	if (import.meta.env.DEV) {
-	// 		console.debug('PermissionGuard Debug Info:', {
-	// 			user,
-	// 			config,
-	// 			permissions,
-	// 			permissionData,
-	// 			isAdmin,
-	// 			hasPermission,
-	// 			isRateLimited,
-	// 			shouldShowContent,
-	// 			loading
-	// 		});
-	// 	}
-	// });
 </script>
 
 {#if shouldShowContent}
 	{@render children?.()}
-{:else if config}
+{:else if !silent && config}
 	{#if isRateLimited}
 		<p class="text-warning-500" role="alert">{messages.rateLimited}</p>
 	{:else}
 		<p class="text-error-500" role="alert">{messages.insufficientPermissions}</p>
 	{/if}
-{:else}
+{:else if !silent && !config}
 	<p class="text-error-500" role="alert">{messages.missingConfig}</p>
 {/if}

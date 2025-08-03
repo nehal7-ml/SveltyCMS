@@ -9,36 +9,31 @@
 ### Props
 - `label`: The label for the widget (default: 'Last 5 Content')
 
-This widget fetches and displays real-time disk usage data, including:
-- Total disk space
-- Used disk space
-- Free disk space
-- Usage percentages
+This widget fetches and displays the latest content items, including:
+- Content title and collection
+- Creation date and author
+- Publication status
+- Status indicators
 
 ### Features:
-- Responsive doughnut chart visualization
+- Clean list-based visualization
 - Theme-aware rendering (light/dark mode support)
 - Real-time data updates
 - Customizable widget properties (size, position, etc.)
 - Improved error handling and data validation
 - Proper lifecycle management
-- Enhanced debugging and logging
+- Enhanced accessibility support
 -->
 
-<script lang="ts">
+<script lang="ts" module>
 	export const widgetMeta = {
 		name: 'Last 5 Content',
 		icon: 'mdi:file-document-multiple',
-		defaultW: 2,
-		defaultH: 2,
-		validSizes: [
-			{ w: 1, h: 1 },
-			{ w: 2, h: 2 },
-			{ w: 2, h: 1 },
-			{ w: 1, h: 2 }
-		]
+		defaultSize: '1/2'
 	};
+</script>
 
+<script lang="ts">
 	import BaseWidget from '../BaseWidget.svelte';
 
 	interface ContentItem {
@@ -50,113 +45,112 @@ This widget fetches and displays real-time disk usage data, including:
 		status: string;
 	}
 
+	type FetchedData = ContentItem[] | undefined;
+
 	let {
-		label = 'Recent Content',
+		label = 'Last 5 Content',
 		theme = 'light',
 		icon = 'mdi:file-document-multiple',
 		widgetId = undefined,
-		gridCellWidth = 0,
-		ROW_HEIGHT = 0,
-		GAP_SIZE = 0,
-		resizable = true,
-		onResizeCommitted = (spans: { w: number; h: number }) => {},
+		size = '1/2',
+		onSizeChange = (newSize) => {},
 		onCloseRequest = () => {}
 	} = $props<{
 		label?: string;
 		theme?: 'light' | 'dark';
 		icon?: string;
 		widgetId?: string;
-		gridCellWidth: number;
-		ROW_HEIGHT: number;
-		GAP_SIZE: number;
-		resizable?: boolean;
-		onResizeCommitted?: (spans: { w: number; h: number }) => void;
+		size?: '1/4' | '1/2' | '3/4' | 'full';
+		onSizeChange?: (newSize: '1/4' | '1/2' | '3/4' | 'full') => void;
 		onCloseRequest?: () => void;
 	}>();
 
 	function getStatusIcon(status: string): string {
+		if (!status) return 'mdi:file-document'; // Guard against undefined status
 		switch (status.toLowerCase()) {
 			case 'published':
 				return 'mdi:check-circle';
 			case 'draft':
 				return 'mdi:pencil-circle';
-			case 'archived':
+			case 'archive':
 				return 'mdi:archive';
 			default:
 				return 'mdi:file-document';
 		}
 	}
 
-	function getStatusColor(status: string): string {
+	function formatDate(dateString: string): string {
+		try {
+			const date = new Date(dateString);
+			return date.toLocaleDateString('en-US', {
+				month: 'short',
+				day: 'numeric',
+				year: date.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined
+			});
+		} catch (error) {
+			return 'Unknown';
+		}
+	}
+
+	function formatAuthor(author: string): string {
+		// Truncate long author names
+		return author.length > 12 ? author.substring(0, 12) + '...' : author;
+	}
+
+	function getStatusColorClass(status: string): string {
+		if (!status) return 'text-surface-600 dark:text-surface-300'; // Guard against undefined status
 		switch (status.toLowerCase()) {
 			case 'published':
-				return 'text-green-500';
+				return 'text-green-600 dark:text-green-400';
 			case 'draft':
-				return 'text-yellow-500';
-			case 'archived':
-				return 'text-gray-500';
+				return 'text-yellow-600 dark:text-yellow-400';
+			case 'archive':
+				return 'text-gray-600 dark:text-gray-400';
 			default:
-				return 'text-blue-500';
+				return 'text-surface-600 dark:text-surface-300';
 		}
 	}
 </script>
 
-<BaseWidget
-	{label}
-	{theme}
-	endpoint="/api/dashboard/last5Content"
-	pollInterval={30000}
-	{icon}
-	{widgetId}
-	{gridCellWidth}
-	{ROW_HEIGHT}
-	{GAP_SIZE}
-	{resizable}
-	{onResizeCommitted}
-	{onCloseRequest}
->
-	{#snippet children({ data: fetchedData })}
-		<div
-			class="relative h-full w-full rounded-lg bg-surface-50 p-2 text-tertiary-500 transition-colors duration-300 ease-in-out dark:bg-surface-400 dark:text-primary-500"
-			aria-label="Recent Content Widget"
-		>
-			<h2 class="flex items-center justify-center gap-2 text-center font-bold">
-				<iconify-icon icon="mdi:file-document-multiple" width="20" class="text-primary-500"></iconify-icon>
-				Recent Content
-			</h2>
-			{#if fetchedData && Array.isArray(fetchedData)}
-				<div class="mt-2 max-h-40 space-y-2 overflow-y-auto">
-					{#each fetchedData as content}
-						<div class="flex items-center justify-between rounded bg-surface-100 p-2 text-xs dark:bg-surface-500">
-							<div class="flex items-center gap-2">
-								<iconify-icon icon={getStatusIcon(content.status)} class={getStatusColor(content.status)}></iconify-icon>
-								<div class="flex flex-col">
-									<span class="max-w-32 truncate font-medium" title={content.title}>{content.title}</span>
-									<span class="text-xs text-surface-500 dark:text-surface-400">
-										{content.collection}
-									</span>
-								</div>
-							</div>
-							<div class="flex flex-col items-end">
-								<span class="capitalize text-surface-600 dark:text-surface-300">
-									{content.status}
+<BaseWidget {label} {theme} endpoint="/api/dashboard/last5Content" pollInterval={30000} {icon} {widgetId} {size} {onSizeChange} {onCloseRequest}>
+	{#snippet children({ data: fetchedData }: { data: FetchedData })}
+		{#if fetchedData && Array.isArray(fetchedData) && fetchedData.length > 0}
+			<div class="grid gap-2" style="max-height: 180px; overflow-y: auto;" role="list" aria-label="Last 5 content items">
+				{#each fetchedData.slice(0, 5) as content (content.id)}
+					<div class="flex items-center justify-between rounded-lg bg-surface-100/80 px-3 py-2 text-xs dark:bg-surface-700/60" role="listitem">
+						<div class="flex min-w-0 items-center gap-2">
+							<iconify-icon
+								icon={getStatusIcon(content.status)}
+								class="flex-shrink-0 text-primary-400"
+								width="18"
+								aria-label={content.status + ' status icon'}
+							></iconify-icon>
+							<div class="flex min-w-0 flex-col">
+								<span class="text-text-900 dark:text-text-100 truncate font-medium" title={content.title}>
+									{content.title}
 								</span>
-								<span class="text-xs text-surface-500 dark:text-surface-400">
-									{content.createdBy}
+								<span class="text-xs text-surface-500 dark:text-surface-400" title={content.collection}>
+									{content.collection}
 								</span>
 							</div>
 						</div>
-					{/each}
-				</div>
-				<div class="mt-2 text-center text-xs text-surface-600 dark:text-surface-400">
-					Total Items: {fetchedData.length}
-				</div>
-			{:else}
-				<div class="flex h-full flex-col items-center justify-center text-xs text-gray-500 dark:text-gray-400">
-					<iconify-icon icon="eos-icons:loading" width="24" class="mb-1"></iconify-icon>
-					<span>Loading content...</span>
-				</div>
-			{/if}
-		</div>
+						<div class="flex flex-col items-end">
+							<span class="text-xs font-medium uppercase {getStatusColorClass(content.status)}">
+								{content.status}
+							</span>
+							<span class="text-xs text-surface-500 dark:text-surface-400" title={`Created: ${formatDate(content.createdAt)}`}>
+								{formatDate(content.createdAt)}
+							</span>
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<div class="flex flex-1 flex-col items-center justify-center py-6 text-xs text-gray-500 dark:text-gray-400" role="status" aria-live="polite">
+				<iconify-icon icon="mdi:file-document-outline" width="32" class="mb-2 text-surface-400 dark:text-surface-500" aria-hidden="true"
+				></iconify-icon>
+				<span>No content found</span>
+			</div>
+		{/if}
 	{/snippet}
 </BaseWidget>

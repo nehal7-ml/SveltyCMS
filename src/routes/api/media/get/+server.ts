@@ -1,11 +1,22 @@
 /**
  * @file src/routes/api/media/get/+server.ts
  * @description
- * API endpoint for retrieving media files.
+ * API endpoint for retrieving media files, scoped to the current tenant.
+ *
+ * @example GET /api/media/get?url=https://example.com/image.jpg
+ *
+ * Features:
+ * - Centralized permission checking for media access
+ * - Requires authentication and media read permissions
+ * - Admin override for unrestricted access
+ * - Secure, tenant-aware file retrieval with proper headers
  */
 
 import type { RequestHandler } from './$types';
 import { error } from '@sveltejs/kit';
+import { privateEnv } from '@root/config/private';
+
+// Permissions
 
 // Media
 import { getFile } from '@utils/media/mediaStorage';
@@ -14,11 +25,15 @@ import { getFile } from '@utils/media/mediaStorage';
 import { logger } from '@utils/logger.svelte';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
-	const user = locals.user;
+	const { user, tenantId } = locals;
 
+	// Authentication is handled by hooks.server.ts
 	if (!user) {
-		logger.warn('No authenticated user found during media retrieval');
-		return json({ success: false, error: 'Unauthorized' }, { status: 401 });
+		throw error(401, 'Unauthorized');
+	}
+
+	if (privateEnv.MULTI_TENANT && !tenantId) {
+		throw error(400, 'Tenant could not be identified for this operation.');
 	}
 
 	try {
@@ -27,7 +42,15 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			throw error(400, 'URL parameter is required');
 		}
 
-		const buffer = await getFile(fileUrl);
+		// Pass tenantId to ensure the file is retrieved from the correct tenant's storage
+		const buffer = await getFile(fileUrl, tenantId);
+
+		logger.debug('Media file retrieved successfully', {
+			fileUrl,
+			fileSize: buffer.length,
+			userId: user?._id,
+			tenantId
+		});
 
 		return new Response(buffer, {
 			headers: {
@@ -38,7 +61,11 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		});
 	} catch (err) {
 		const message = `Error retrieving file: ${err instanceof Error ? err.message : String(err)}`;
-		logger.error(message);
+		logger.error(message, {
+			fileUrl: url.searchParams.get('url'),
+			userId: user?._id,
+			tenantId
+		});
 		throw error(500, message);
 	}
 };

@@ -15,15 +15,11 @@ Efficiently manages user data updates with validation, role selection, and delet
 -->
 
 <script lang="ts">
-	import { page } from '$app/state';
 	import { invalidateAll } from '$app/navigation';
-
+	import { page } from '$app/state';
 	// Skeleton & Stores
-	import { getModalStore, getToastStore } from '@skeletonlabs/skeleton';
 	import type { ModalComponent } from '@skeletonlabs/skeleton';
-	const modalStore = getModalStore();
-	const toastStore = getToastStore();
-
+	import { getModalStore, getToastStore } from '@skeletonlabs/skeleton';
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
@@ -32,15 +28,14 @@ Efficiently manages user data updates with validation, role selection, and delet
 	const isFirstUser = page.data.isFirstUser;
 
 	// Components
-	import FloatingInput from '@components/system/inputs/floatingInput.svelte';
 	import PermissionGuard from '@components/PermissionGuard.svelte';
+	import FloatingInput from '@components/system/inputs/floatingInput.svelte';
 
 	// Config for the general edit form permissions
 	const modaleEditFormConfig = {
 		name: 'Admin User Edit Form',
 		description: 'Allows admins to manage user accounts, including editing and assigning roles.',
 		contextId: 'user:manage',
-		requiredRole: 'admin',
 		action: 'manage',
 		contextType: 'user'
 	};
@@ -65,6 +60,10 @@ Efficiently manages user data updates with validation, role selection, and delet
 	}
 	let { parent, isGivenData = false, username = null, email = null, role = null, user_id = null }: Props = $props();
 
+	// Store initialization
+	const modalStore = getModalStore();
+	const toastStore = getToastStore();
+
 	// Form Data Initialization
 	const formData = $state({
 		user_id: isGivenData ? user_id : user?._id,
@@ -83,6 +82,11 @@ Efficiently manages user data updates with validation, role selection, and delet
 		confirm: { status: false, msg: '' }
 	});
 	const isOwnProfile = formData.user_id === user?._id || !isGivenData;
+	const canChangePassword = isOwnProfile || user?.isAdmin;
+
+	// Check if user has delete permission for layout purposes
+	const hasDeletePermission = user?.isAdmin || user?.role === 'admin';
+	const showDeleteButton = hasDeletePermission && !isOwnProfile && !isFirstUser;
 
 	function onFormSubmit(event: SubmitEvent): void {
 		event.preventDefault();
@@ -93,12 +97,52 @@ Efficiently manages user data updates with validation, role selection, and delet
 				errorStatus.confirm = { status: true, msg: m.formSchemas_Passwordmatch() };
 				return;
 			}
-			if (formData.password.length < 8) {
+			if (formData.password.length > 0 && formData.password.length < 8) {
 				errorStatus.password = { status: true, msg: m.formSchemas_PasswordMessage({ passwordStrength: '8' }) };
 				return;
 			}
 		}
-		if ($modalStore[0].response) $modalStore[0].response(formData);
+
+		// Track what changed for smart toast messages
+		const changes: string[] = [];
+		const originalData = {
+			username: isGivenData ? username : user?.username,
+			email: isGivenData ? email : user?.email,
+			role: isGivenData ? role : user?.role
+		};
+
+		// Check what actually changed
+		if (formData.username !== originalData.username) {
+			changes.push('username');
+		}
+		if (formData.role !== originalData.role) {
+			const oldRole = roles?.find((r: any) => r._id === originalData.role)?.name || originalData.role;
+			const newRole = roles?.find((r: any) => r._id === formData.role)?.name || formData.role;
+			changes.push(`role (${oldRole} → ${newRole})`);
+		}
+		if (formData.password && formData.password.trim() !== '') {
+			changes.push('password');
+		}
+
+		// Create a clean data object, conditionally including password fields
+		const submitData: Record<string, any> = {
+			user_id: formData.user_id,
+			username: formData.username,
+			email: formData.email,
+			role: formData.role,
+			_changes: changes // Include changes for the response handler
+		};
+
+		// Only include password fields if they're not empty
+		if (formData.password && formData.password.trim() !== '') {
+			submitData.password = formData.password;
+			submitData.confirmPassword = formData.confirmPassword;
+		}
+
+		// Access the current modal from the store
+		if ($modalStore[0]?.response) {
+			$modalStore[0].response(submitData);
+		}
 		modalStore.close();
 	}
 
@@ -114,14 +158,19 @@ Efficiently manages user data updates with validation, role selection, and delet
 				})
 			});
 			const data = await response.json();
+
 			if (!response.ok) {
 				throw new Error(data.message || 'Failed to delete user.');
 			}
+
+			// Use the success message from the API response
+			const successMessage = data.message || 'User deleted successfully.';
 			toastStore.trigger({
-				message: '<iconify-icon icon="mdi:check" width="24"/> User deleted successfully.',
-				background: 'gradient-tertiary',
+				message: `<iconify-icon icon="mdi:check" width="24"/> ${successMessage}`,
+				background: 'variant-filled-success',
 				timeout: 3000
 			});
+
 			await invalidateAll();
 			modalStore.close();
 		} catch (err) {
@@ -186,7 +235,18 @@ Efficiently manages user data updates with validation, role selection, and delet
 			</div>
 
 			<!-- Password Change Section -->
-			{#if isOwnProfile}
+			{#if canChangePassword}
+				{#if !isOwnProfile && user?.isAdmin}
+					<div class="mb-4 rounded-md bg-warning-50 p-3 text-sm text-warning-800 dark:bg-warning-900/20 dark:text-warning-200">
+						<div class="flex">
+							<iconify-icon icon="mdi:information" width="16" class="mr-2 mt-0.5 flex-shrink-0"></iconify-icon>
+							<div>
+								<strong>Admin Password Reset:</strong> You are setting a new password for this user. Leave empty to keep current password unchanged.
+							</div>
+						</div>
+					</div>
+				{/if}
+
 				<!-- Password field -->
 				<div class="group relative z-0 mb-6 w-full">
 					<iconify-icon icon="mdi:password" width="18" class="absolute left-0 top-3.5 text-gray-400"></iconify-icon>
@@ -194,7 +254,7 @@ Efficiently manages user data updates with validation, role selection, and delet
 						type="password"
 						name="password"
 						id="password"
-						label={m.modaleditform_newpassword()}
+						label={isOwnProfile ? m.modaleditform_newpassword() : 'Set New Password'}
 						bind:value={formData.password}
 						bind:showPassword
 						onkeydown={() => (errorStatus.password.status = false)}
@@ -225,7 +285,7 @@ Efficiently manages user data updates with validation, role selection, and delet
 			{/if}
 
 			<!-- Role Select -->
-			<PermissionGuard config={modaleEditFormConfig}>
+			<PermissionGuard config={modaleEditFormConfig} silent={true}>
 				<div class="flex flex-col gap-2 sm:flex-row">
 					<div class="border-b text-center sm:w-1/4 sm:border-0 sm:text-left">{m.form_userrole()}</div>
 					<div class="flex-auto">
@@ -249,16 +309,18 @@ Efficiently manages user data updates with validation, role selection, and delet
 				</div>
 			</PermissionGuard>
 		</form>
-		<footer class="modal-footer {parent.regionFooter} flex justify-between">
+		<footer class="modal-footer {parent.regionFooter} flex {showDeleteButton ? 'justify-between' : 'justify-end'}">
 			<!-- Delete User Button -->
-			<PermissionGuard config={deleteUserPermissionConfig}>
-				<button type="button" onclick={deleteUser} class="variant-filled-error btn" disabled={isOwnProfile || isFirstUser}>
-					<iconify-icon icon="icomoon-free:bin" width="24"></iconify-icon>
-					<span class="hidden sm:block">{m.button_delete()}</span>
-				</button>
-			</PermissionGuard>
+			{#if showDeleteButton}
+				<PermissionGuard config={deleteUserPermissionConfig} silent={true}>
+					<button type="button" onclick={deleteUser} class="variant-filled-error btn">
+						<iconify-icon icon="icomoon-free:bin" width="24"></iconify-icon>
+						<span class="hidden sm:block">{m.button_delete()}</span>
+					</button>
+				</PermissionGuard>
+			{/if}
 
-			<div class="flex justify-end gap-4">
+			<div class="flex gap-4">
 				<!-- Cancel -->
 				<button type="button" class="variant-outline-secondary btn" onclick={parent.onClose}>{m.button_cancel()}</button>
 				<!-- Save -->

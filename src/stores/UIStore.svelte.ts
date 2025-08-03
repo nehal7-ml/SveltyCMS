@@ -39,12 +39,6 @@ const createUIStores = () => {
 
 	// Tailored default state based on screen size and mode
 	const getDefaultState = (size: ScreenSize, isViewMode: boolean): UIState => {
-		// Debug log current state
-		logger.debug('UIStore: Calculating default state', {
-			screenSize: size,
-			isViewMode
-		});
-
 		// Mobile behavior (<768px)
 		if (size === ScreenSize.XS || size === ScreenSize.SM) {
 			return {
@@ -74,7 +68,7 @@ const createUIStores = () => {
 			leftSidebar: isViewMode ? 'full' : 'collapsed',
 			rightSidebar: isViewMode ? 'hidden' : 'full',
 			pageheader: isViewMode ? 'hidden' : 'full',
-			pagefooter: isViewMode ? 'hidden' : 'full',
+			pagefooter: isViewMode ? 'hidden' : 'hidden', // Hide on desktop edit mode since RightSidebar shows detailed info
 			header: 'hidden',
 			footer: 'hidden'
 		};
