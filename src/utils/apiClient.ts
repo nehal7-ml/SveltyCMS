@@ -48,7 +48,6 @@ interface GetDataResponse {
 }
 
 // --- Core API Functions ---
-
 async function fetchApi<T>(endpoint: string, options: RequestInit): Promise<ApiResponse<T>> {
 	try {
 		const response = await fetch(endpoint, {
@@ -69,7 +68,6 @@ async function fetchApi<T>(endpoint: string, options: RequestInit): Promise<ApiR
 }
 
 // --- Entry Action Functions ---
-
 export function createEntry(collectionId: string, payload: Record<string, unknown>): Promise<ApiResponse<unknown>> {
 	return fetchApi(`/api/collections/${collectionId}`, {
 		method: 'POST',
@@ -106,10 +104,38 @@ export function updateEntryStatus(collectionId: string, entryId: string, status:
 	});
 }
 
+export function deleteEntry(collectionId: string, entryId: string): Promise<ApiResponse<unknown>> {
+	return fetchApi(`/api/collections/${collectionId}/${entryId}`, {
+		method: 'DELETE'
+	});
+}
+
+export function batchDeleteEntries(collectionId: string, entryIds: string[]): Promise<ApiResponse<unknown>> {
+	return fetchApi(`/api/collections/${collectionId}/batch-delete`, {
+		method: 'POST',
+		body: JSON.stringify({ entryIds })
+	});
+}
+
 export function createClones(collectionId: string, entries: Record<string, unknown>[]): Promise<ApiResponse<unknown>> {
 	return fetchApi(`/api/collections/${collectionId}/batch-clone`, {
 		method: 'POST',
 		body: JSON.stringify({ entries })
+	});
+}
+
+// Batch operations for entries
+export function batchCloneEntries(collectionId: string, entryIds: string[]): Promise<ApiResponse<unknown>> {
+	return fetchApi(`/api/collections/${collectionId}/batch`, {
+		method: 'POST',
+		body: JSON.stringify({ action: 'clone', entryIds })
+	});
+}
+
+export function batchUpdateEntriesStatus(collectionId: string, entryIds: string[], status: string): Promise<ApiResponse<unknown>> {
+	return fetchApi(`/api/collections/${collectionId}/batch`, {
+		method: 'POST',
+		body: JSON.stringify({ action: 'status', entryIds, status })
 	});
 }
 
