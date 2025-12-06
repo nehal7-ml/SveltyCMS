@@ -12,7 +12,9 @@
  *    * Error tracking service integration
  */
 
-import { logger } from '@utils/logger.svelte';
+import type { ISODateString } from '@src/content/types';
+import { logger } from '@utils/logger';
+import { publicEnv } from '@stores/globalSettings.svelte';
 
 // --- Type Definitions ---
 export interface ApiResponse<T = unknown> {
@@ -28,7 +30,7 @@ export interface RevisionDiff {
 
 export interface RevisionMeta {
 	_id: string;
-	revision_at: string; // ISO date string
+	revision_at: ISODateString; // ISO date string
 	revision_by: string;
 }
 
@@ -111,9 +113,9 @@ export function deleteEntry(collectionId: string, entryId: string): Promise<ApiR
 }
 
 export function batchDeleteEntries(collectionId: string, entryIds: string[]): Promise<ApiResponse<unknown>> {
-	return fetchApi(`/api/collections/${collectionId}/batch-delete`, {
+	return fetchApi(`/api/collections/${collectionId}/batch`, {
 		method: 'POST',
-		body: JSON.stringify({ entryIds })
+		body: JSON.stringify({ action: 'delete', entryIds })
 	});
 }
 
@@ -191,7 +193,7 @@ function generateCacheKey(query: Record<string, unknown>): string {
 		collectionId: (query.collectionId as string)?.trim().toLowerCase(),
 		page: query.page || 1,
 		pageSize: query.pageSize || query.limit || 25,
-		contentLanguage: query.contentLanguage || 'en',
+		contentLanguage: query.contentLanguage || publicEnv.DEFAULT_CONTENT_LANGUAGE,
 		filter: query.filter || '{}',
 		sortField: query.sortField || 'createdAt',
 		sortDirection: query.sortDirection || 'desc',

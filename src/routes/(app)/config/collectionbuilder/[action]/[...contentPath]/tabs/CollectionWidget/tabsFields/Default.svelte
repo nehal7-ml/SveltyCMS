@@ -17,9 +17,9 @@ Features:
 
 <script lang="ts">
 	import { asAny } from '@utils/utils';
+	import type { SvelteComponent } from 'svelte';
 
 	// Components
-	import widgets from '@widgets';
 	import InputSwitch from '@components/system/builder/InputSwitch.svelte';
 
 	// Skeleton Stores
@@ -28,28 +28,39 @@ Features:
 
 	// Stores
 	import { targetWidget } from '@src/stores/collectionStore.svelte';
-	import type { GuiSchema } from '@root/src/widgets/core/group/types';
 
-	// Get the keys of the widgets object
+	// GuiSchema is a record of field properties with their widget configs
+	type GuiSchema = Record<string, { widget: typeof SvelteComponent }>;
 
 	interface Props {
 		guiSchema: GuiSchema;
 	}
 
-	let { guiSchema }: Props = $props();
+	const { guiSchema }: Props = $props();
+
+	// Get all properties from the guiSchema
+	const allProperties = $derived(Object.keys(guiSchema || {}));
+
+	// Define standard/default properties that should appear first
+	const standardProperties = ['label', 'db_fieldName', 'required', 'translated', 'icon', 'helper', 'width'];
+
+	// Get additional properties from the widget's GuiSchema
+	const additionalProperties = $derived(allProperties.filter((prop) => !standardProperties.includes(prop) && prop !== 'permissions'));
+
+	// Combine them in order: standard first, then additional
+	const displayProperties = $derived([...standardProperties, ...additionalProperties]);
 
 	function defaultValue(property: string) {
 		if (property === 'required' || property === 'translated') {
 			return false;
-		} else return targetWidget.value.widget.Name;
+		} else return (targetWidget.value.widget as any)?.Name;
 	}
 
 	function handleUpdate(event: CustomEvent, property: string) {
-		targetWidget.update((w) => {
-			w[property] = event.detail.value;
-
-			return w;
-		});
+		// Update the targetWidget store
+		const currentWidget = targetWidget.value;
+		currentWidget[property] = event.detail.value;
+		targetWidget.value = currentWidget;
 	}
 </script>
 
@@ -63,14 +74,16 @@ Features:
 	</div>
 
 	<div class="options-table">
-		{#each ['label', 'display', 'db_fieldName', 'required', 'translated', 'icon', 'helper', 'width'] as property}
-			<InputSwitch
-				value={targetWidget.value[property] ?? defaultValue(property)}
-				icon={targetWidget.value[property] as string}
-				widget={asAny(guiSchema[property]?.widget)}
-				key={property}
-				on:update={(e) => handleUpdate(e, property)}
-			/>
+		{#each displayProperties as property}
+			{#if guiSchema[property]}
+				<InputSwitch
+					value={targetWidget.value[property] ?? defaultValue(property)}
+					icon={targetWidget.value[property] as string}
+					widget={asAny(guiSchema[property]?.widget)}
+					key={property}
+					on:update={(e) => handleUpdate(e, property)}
+				/>
+			{/if}
 		{/each}
 	</div>
 {/if}

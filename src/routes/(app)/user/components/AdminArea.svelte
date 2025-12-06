@@ -5,13 +5,21 @@
 -->
 
 <script lang="ts">
+	// Type guards for template and logic
+	function isToken(row: User | Token): row is Token {
+		return 'token' in row && typeof row.token === 'string';
+	}
+	function isUser(row: User | Token): row is User {
+		return '_id' in row && typeof row._id === 'string';
+	}
 	import { debounce } from '@utils/utils';
-
+	import { untrack } from 'svelte';
+	import { logger } from '@utils/logger';
 	// Stores
 	import { avatarSrc } from '@stores/store.svelte';
+	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
 
 	// Components
-	import Loading from '@components/Loading.svelte';
 	import PermissionGuard from '@components/PermissionGuard.svelte';
 	import FloatingInput from '@components/system/inputs/floatingInput.svelte';
 	import Boolean from '@components/system/table/Boolean.svelte';
@@ -25,102 +33,122 @@
 	import * as m from '@src/paraglide/messages';
 	// Skeleton
 	import type { ModalSettings } from '@skeletonlabs/skeleton';
-	import { Avatar, clipboard, getModalStore, getToastStore } from '@skeletonlabs/skeleton';
+	import { Avatar, clipboard } from '@skeletonlabs/skeleton';
+	import { showConfirm, showModal } from '@utils/modalUtils';
+	import { showToast } from '@utils/toast';
 	// Svelte-dnd-action
-	import { PermissionAction, PermissionType } from '@root/src/auth/types';
+	import { PermissionAction, PermissionType } from '@src/databases/auth/types';
 	import { dndzone } from 'svelte-dnd-action';
 	import { flip } from 'svelte/animate';
 
 	// Types
-	interface UserData {
-		_id: string;
-		username: string;
-		email: string;
-		role: string;
-		tenantId?: string;
-		blocked: boolean;
-		avatar?: string;
-		activeSessions: number;
-		lastAccess: Date;
-		createdAt: Date;
-		updatedAt: Date;
-		[key: string]: any;
-	}
+	import type { User, Token } from '@src/databases/auth/types';
 
-	interface TokenData {
-		token: string;
-		email: string;
-		role: string;
-		user_id: string;
-		tenantId?: string;
-		blocked: boolean;
-		expires: Date;
-		createdAt: Date;
-		updatedAt: Date;
-		[key: string]: any;
-	}
-
-	interface AdminData {
-		users: UserData[];
-		tokens: TokenData[];
-	}
+	type TableDataType = User | Token;
 
 	interface TableHeader {
 		label: string;
-		key: string;
+		key: keyof User | keyof Token;
 		visible: boolean;
 		id: string;
 	}
 
-	interface SortingState {
-		sortedBy: string;
-		isSorted: number; // 1: asc, -1: desc, 0: none
-	}
+	// Props - Using API for scalability
+	const { currentUser = null, isMultiTenant = false, roles = [] } = $props();
 
-	// Props
-	let {
-		adminData,
-		currentUser = null,
-		isMultiTenant = false
-	} = $props<{ adminData: AdminData | null; currentUser?: { _id: string; [key: string]: any } | null; isMultiTenant?: boolean }>();
-
-	const modalStore = getModalStore();
-	const toastStore = getToastStore();
 	const waitFilter = debounce(300);
 	const flipDurationMs = 300;
 
+	// State for API-fetched data (replaces adminData usage for scalability)
+	let tableData: TableDataType[] = $state([]);
+	let totalItems = $state(0);
+
+	async function fetchData() {
+		await globalLoadingStore.withLoading(
+			loadingOperations.dataFetch,
+			async () => {
+				const endpoint = showUserList ? '/api/admin/users' : '/api/admin/tokens';
+				// eslint-disable-next-line svelte/prefer-svelte-reactivity
+				const params = new URLSearchParams();
+				params.set('page', String(currentPage));
+				params.set('limit', String(rowsPerPage));
+				params.set('sort', sorting.sortedBy || 'createdAt');
+				if (sorting.isSorted !== 0) {
+					params.set('order', sorting.isSorted === 1 ? 'asc' : 'desc');
+				}
+				if (globalSearchValue) {
+					params.set('search', globalSearchValue);
+				}
+
+				try {
+					const response = await fetch(`${endpoint}?${params.toString()}`);
+					if (!response.ok) {
+						const errorData = await response.json();
+						throw new Error(errorData.message || 'Failed to fetch data');
+					}
+					const result = await response.json();
+					if (result.success) {
+						tableData = result.data;
+						totalItems = result.pagination.totalItems;
+					}
+				} catch (err) {
+					const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+					logger.error('AdminArea fetch error:', errorMessage);
+					showToast(`Error fetching data: ${errorMessage}`, 'error');
+					tableData = [];
+					totalItems = 0;
+				}
+			},
+			'Fetching admin data'
+		);
+	}
+
 	// Custom event handler for token updates from Multibutton
-	function handleTokenUpdate(event: CustomEvent<{ tokenIds: string[]; action: string }>) {
+	function handleTokenUpdate(event: CustomEvent) {
 		const { tokenIds, action } = event.detail;
 
-		if (adminData && adminData.tokens) {
+		// Update the tableData instead of adminData for scalability
+		if (tableData) {
 			let updated = false;
-			const updatedTokens = adminData.tokens.map((token: TokenData) => {
-				if (tokenIds.includes(token.token)) {
-					updated = true;
-					if (action === 'block') {
-						return { ...token, blocked: true };
-					} else if (action === 'unblock') {
-						return { ...token, blocked: false };
-					}
-				}
-				return token;
-			});
 
+			if (action === 'delete') {
+				// Remove deleted tokens from the table
+				const updatedData = tableData.filter((item: User | Token) => !tokenIds.includes((item as Token).token as string));
+				if (updatedData.length !== tableData.length) {
+					tableData = updatedData;
+					updated = true;
+				}
+			} else {
+				// Handle block/unblock actions
+				const updatedData = tableData.map((item: User | Token) => {
+					if (tokenIds.includes((item as Token).token as string)) {
+						updated = true;
+						if (action === 'block') {
+							return { ...item, blocked: true };
+						} else if (action === 'unblock') {
+							return { ...item, blocked: false };
+						}
+					}
+					return item;
+				});
+
+				if (updated) {
+					tableData = updatedData;
+				}
+			}
+
+			// Clear selection after any action
 			if (updated) {
-				adminData = {
-					...adminData,
-					tokens: updatedTokens
-				};
+				selectedRows = [];
 			}
 		}
 	} // Table header definitions
 	const tableHeadersUser = [
 		{ label: m.adminarea_blocked(), key: 'blocked' },
 		{ label: m.form_avatar(), key: 'avatar' },
-		{ label: m.form_email(), key: 'email' },
-		{ label: m.form_username(), key: 'username' },
-		{ label: m.form_role(), key: 'role' },
+		{ label: m.email(), key: 'email' },
+		{ label: m.username(), key: 'username' },
+		{ label: m.role(), key: 'role' },
 		{ label: 'Tenant ID', key: 'tenantId' },
 		{ label: m.adminarea_user_id(), key: '_id' },
 		{ label: m.adminarea_activesession(), key: 'activeSessions' },
@@ -131,8 +159,8 @@
 
 	const tableHeaderToken = [
 		{ label: m.adminarea_blocked(), key: 'blocked' },
-		{ label: m.form_email(), key: 'email' },
-		{ label: m.form_role(), key: 'role' },
+		{ label: m.email(), key: 'email' },
+		{ label: m.role(), key: 'role' },
 		{ label: 'Tenant ID', key: 'tenantId' },
 		{ label: m.adminarea_token(), key: 'token' },
 		{ label: m.adminarea_expiresin(), key: 'expires' },
@@ -144,33 +172,14 @@
 	let showUserList = $state(true);
 	let showUsertoken = $state(false);
 	let showExpiredTokens = $state(false);
-	let isLoading = $state(false);
 	let globalSearchValue = $state('');
 	let searchShow = $state(false);
 	let filterShow = $state(false);
 	let columnShow = $state(false);
 	let selectAll = $state(false);
-	let selectedMap = $state<Record<number, boolean>>({});
-	let tableData = $derived.by(() => {
-		if (!adminData) return [] as UserData[];
-		if (showUserList) {
-			return adminData.users as UserData[];
-		} else if (showUsertoken) {
-			const tokens = adminData.tokens as TokenData[];
-			if (showExpiredTokens) {
-				return tokens; // Show all tokens including expired ones
-			} else {
-				// Filter out expired tokens
-				const now = new Date();
-				return tokens.filter((token) => {
-					if (!token.expires) return true; // Keep tokens without expiration
-					return new Date(token.expires) > now; // Keep only non-expired tokens
-				});
-			}
-		}
-	});
-	let filteredTableData = $state<(UserData | TokenData)[]>([]);
-	let selectedRows = $state<(UserData | TokenData)[]>([]);
+	let selectedMap: Record<number, boolean> = $state({});
+
+	// Derived rows to display and selection will be defined below
 	let density = $state(
 		(() => {
 			const settings = localStorage.getItem('userPaginationSettings');
@@ -178,14 +187,14 @@
 		})()
 	);
 	let selectAllColumns = $state(true);
-	let pagesCount = $state(1);
+	// pagesCount becomes derived below
 	let currentPage = $state(1);
 	let rowsPerPage = $state(10);
-	let filters = $state<{ [key: string]: string }>({});
-	let sorting = $state<SortingState>({ sortedBy: '', isSorted: 0 });
+	let filters = $state({});
+	let sorting = $state({ sortedBy: '', isSorted: 0 });
 
 	// Initialize displayTableHeaders with a safe default
-	let displayTableHeaders = $state<TableHeader[]>([]);
+	let displayTableHeaders: TableHeader[] = $state([]);
 
 	$effect(() => {
 		// Update displayTableHeaders when view changes
@@ -197,11 +206,22 @@
 			visible: true,
 			id: `header-${Math.random().toString(36).substring(2, 15)}-${Date.now().toString(36)}`
 		}));
+	});
 
-		// Update selectedRows based on selectedMap
-		selectedRows = Object.entries(selectedMap)
-			.filter(([_, isSelected]) => isSelected)
-			.map(([index]) => filteredTableData[parseInt(index)]);
+	// Reactive effect to fetch data when dependencies change
+	$effect(() => {
+		// Rerun when any of these reactive variables change
+		void showUserList;
+		void showUsertoken;
+		void currentPage;
+		void rowsPerPage;
+		void sorting;
+		void globalSearchValue;
+		void currentUser; // Watch for changes to current user (triggers refresh after user update)
+
+		untrack(() => {
+			fetchData();
+		});
 	});
 
 	// Modal for token editing
@@ -215,18 +235,7 @@
 				slot: `
 					<div class="mb-4">
 						<h3 class="text-lg font-bold">Existing Tokens</h3>
-						{#if adminData?.tokens?.length > 0}
-							<ul class="max-h-40 overflow-y-auto">
-								{#each adminData.tokens as token}
-									<li class="flex items-center justify-between border-b py-2">
-										<span class="truncate">{token.email}</span>
-										<span class="text-sm text-gray-500">Expires: {token.expires && token.expires !== null ? new Date(token.expires).toLocaleString() : 'Never'}</span>
-									</li>
-								{/each}
-							</ul>
-						{:else}
-							<p class="text-gray-500">No existing tokens</p>
-						{/if}
+						<p class="text-gray-500">Token list will refresh after creation</p>
 					</div>
 				`,
 				props: {
@@ -237,22 +246,22 @@
 				}
 			},
 			response: (result) => {
+				// On success, refresh data without changing view state
+				if (result && result.success) {
+					// Don't change the view state, just refresh the data
+					fetchData(); // Refetch data
+					return;
+				}
 				if (result?.success === false) {
-					const t = {
-						message: `<iconify-icon icon="mdi:alert-circle" color="white" width="24" class="mr-1"></iconify-icon> ${result.error || 'Failed to send email'}`,
-						background: 'variant-filled-error',
-						timeout: 5000,
-						classes: 'border-1 !rounded-md'
-					};
-					toastStore.trigger(t);
+					showToast(result.error || 'Failed to send email', 'error');
 				}
 			}
 		};
-		modalStore.trigger(modalSettings);
+		showModal(modalSettings);
 	}
 
 	// Function to edit a specific token
-	function editToken(tokenData: TokenData) {
+	function editToken(tokenData: Token) {
 		const modalSettings: ModalSettings = {
 			type: 'component',
 			title: m.multibuttontoken_modaltitle(),
@@ -267,18 +276,18 @@
 				}
 			},
 			response: (result) => {
+				// On success, refresh the data without changing view state
+				if (result && result.success) {
+					// Don't change the view state, just refresh the data
+					fetchData(); // Refetch data
+					return;
+				}
 				if (result?.success === false) {
-					const t = {
-						message: `<iconify-icon icon="mdi:alert-circle" color="white" width="24" class="mr-1"></iconify-icon> ${result.error || 'Failed to update token'}`,
-						background: 'variant-filled-error',
-						timeout: 5000,
-						classes: 'border-1 !rounded-md'
-					};
-					toastStore.trigger(t);
+					showToast(result.error || 'Failed to update token', 'error');
 				}
 			}
 		};
-		modalStore.trigger(modalSettings);
+		showModal(modalSettings);
 	}
 
 	// Helper function to convert Date to expires format expected by ModalEditToken
@@ -300,6 +309,23 @@
 		if (diffDays <= 30) return '1 month';
 
 		return '1 month'; // Max available option
+	}
+
+	// Normalize media URLs for table display to avoid requesting bare /files
+	function normalizeMediaUrl(url: string | null | undefined): string {
+		if (!url) return '/Default_User.svg';
+		try {
+			if (url.startsWith('data:') || /^https?:\/\//i.test(url)) return url;
+			if (url === '/files' || url === '/files/') return '/Default_User.svg';
+			if (url.startsWith('/files/')) return url;
+			// Allow direct svg in static
+			if (/^\/?[^\s?]+\.svg$/i.test(url)) return url.startsWith('/') ? url : `/${url}`;
+			// Fallback: prefix media-ish paths with /files/
+			const trimmed = url.startsWith('/') ? url.slice(1) : url;
+			return `/files/${trimmed}`;
+		} catch {
+			return '/Default_User.svg';
+		}
 	}
 
 	// Helper function to calculate remaining time until expiration for display in table
@@ -328,18 +354,25 @@
 		}
 	}
 
+	// Safe date formatter for unknown values coming from API
+	function formatDate(value: unknown): string {
+		if (value === null || value === undefined || value === '') return '-';
+		try {
+			const d = value instanceof Date ? value : new Date(String(value));
+			if (isNaN(d.getTime())) return '-';
+			return d.toLocaleString();
+		} catch {
+			return '-';
+		}
+	}
+
 	// Toggle user blocked status - always show confirmation modal (like Multibutton)
-	async function toggleUserBlocked(user: UserData) {
+	async function toggleUserBlocked(user: User) {
 		if (!user._id) return;
 
 		// Prevent admins from blocking themselves
 		if (currentUser && user._id === currentUser._id) {
-			toastStore.trigger({
-				message: 'You cannot block your own account',
-				background: 'variant-filled-warning',
-				timeout: 3000,
-				classes: 'border-1 !rounded-md'
-			});
+			showToast('You cannot block your own account', 'warning');
 			return;
 		}
 
@@ -355,26 +388,18 @@
 			? `Are you sure you want to <span class="text-success-500 font-semibold">unblock</span> user <span class="text-tertiary-500 font-medium">${user.email}</span>? This will allow them to access the system again.`
 			: `Are you sure you want to <span class="text-error-500 font-semibold">block</span> user <span class="text-tertiary-500 font-medium">${user.email}</span>? This will prevent them from accessing the system.`;
 
-		const modalSettings: ModalSettings = {
-			type: 'confirm',
+		showConfirm({
 			title: modalTitle,
 			body: modalBody,
-			buttonTextConfirm: actionWord,
-			buttonTextCancel: 'Cancel',
-			// Custom button styling based on action
-			...(user.blocked
-				? { meta: { buttonConfirmClasses: 'variant-filled-warning' } }
-				: { meta: { buttonConfirmClasses: 'bg-pink-500 hover:bg-pink-600 text-white' } }),
-			response: async (confirmed: boolean) => {
-				if (confirmed) {
-					await performBlockAction(user, action, actionPastTense);
-				}
+			confirmText: actionWord,
+			confirmClasses: user.blocked ? 'variant-filled-warning' : 'bg-pink-500 hover:bg-pink-600 text-white',
+			onConfirm: async () => {
+				await performBlockAction(user, action, actionPastTense);
 			}
-		};
-		modalStore.trigger(modalSettings);
+		});
 	}
 
-	async function performBlockAction(user: UserData, action: string, actionPastTense: string) {
+	async function performBlockAction(user: User, action: string, actionPastTense: string) {
 		try {
 			const response = await fetch('/api/user/batch', {
 				method: 'POST',
@@ -390,39 +415,23 @@
 			const result = await response.json();
 
 			if (result.success) {
-				// Update the user in the data by creating a new adminData object to trigger reactivity
-				if (adminData) {
-					const updatedUsers = adminData.users.map((u: UserData) => (u._id === user._id ? { ...u, blocked: !u.blocked } : u));
-
-					// Create a new adminData object to trigger reactivity
-					adminData = {
-						...adminData,
-						users: updatedUsers
-					};
-				}
-
-				toastStore.trigger({
-					message: `User ${actionPastTense} successfully`,
-					background: 'variant-filled-success',
-					timeout: 3000,
-					classes: 'border-1 !rounded-md'
-				});
+				// Update the user in tableData to reflect changes immediately
+				const updatedData = tableData.map((item: User | Token) =>
+					'_id' in item && (item as User)._id === user._id ? { ...item, blocked: !item.blocked } : item
+				);
+				tableData = updatedData;
+				showToast(`User ${actionPastTense} successfully`, 'success');
 			} else {
 				throw new Error(result.message || `Failed to ${action} user`);
 			}
 		} catch (err) {
 			const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-			toastStore.trigger({
-				message: `Failed to ${action} user: ${errorMessage}`,
-				background: 'variant-filled-error',
-				timeout: 5000,
-				classes: 'border-1 !rounded-md'
-			});
+			showToast(`Failed to ${action} user: ${errorMessage}`, 'error');
 		}
 	}
 
 	// Toggle token blocked status - similar to user blocking
-	async function toggleTokenBlocked(token: TokenData) {
+	async function toggleTokenBlocked(token: Token) {
 		if (!token.token) return;
 
 		const action = token.blocked ? 'unblock' : 'block';
@@ -437,26 +446,18 @@
 			? `Are you sure you want to <span class="text-success-500 font-semibold">unblock</span> token for <span class="text-tertiary-500 font-medium">${token.email}</span>? This will allow the token to be used again.`
 			: `Are you sure you want to <span class="text-error-500 font-semibold">block</span> token for <span class="text-tertiary-500 font-medium">${token.email}</span>? This will prevent the token from being used.`;
 
-		const modalSettings: ModalSettings = {
-			type: 'confirm',
+		showConfirm({
 			title: modalTitle,
 			body: modalBody,
-			buttonTextConfirm: actionWord,
-			buttonTextCancel: 'Cancel',
-			// Custom button styling based on action
-			...(token.blocked
-				? { meta: { buttonConfirmClasses: 'variant-filled-warning' } }
-				: { meta: { buttonConfirmClasses: 'bg-pink-500 hover:bg-pink-600 text-white' } }),
-			response: async (confirmed: boolean) => {
-				if (confirmed) {
-					await performTokenBlockAction(token, action, actionPastTense);
-				}
+			confirmText: actionWord,
+			confirmClasses: token.blocked ? 'variant-filled-warning' : 'bg-pink-500 hover:bg-pink-600 text-white',
+			onConfirm: async () => {
+				await performTokenBlockAction(token, action, actionPastTense);
 			}
-		};
-		modalStore.trigger(modalSettings);
+		});
 	}
 
-	async function performTokenBlockAction(token: TokenData, action: string, actionPastTense: string) {
+	async function performTokenBlockAction(token: Token, action: string, actionPastTense: string) {
 		try {
 			const response = await fetch('/api/token/batch', {
 				method: 'POST',
@@ -472,42 +473,26 @@
 			const result = await response.json();
 
 			if (result.success) {
-				// Update the token in the data by creating a new adminData object to trigger reactivity
-				if (adminData) {
-					const updatedTokens = adminData.tokens.map((t: TokenData) => (t.token === token.token ? { ...t, blocked: !t.blocked } : t));
-
-					// Create a new adminData object to trigger reactivity
-					adminData = {
-						...adminData,
-						tokens: updatedTokens
-					};
-				}
-
-				toastStore.trigger({
-					message: `Token ${actionPastTense} successfully`,
-					background: 'variant-filled-success',
-					timeout: 3000,
-					classes: 'border-1 !rounded-md'
-				});
+				// Update the token in tableData to reflect changes immediately
+				const updatedData = tableData.map((item: User | Token) =>
+					'token' in item && (item as Token).token === token.token ? { ...item, blocked: !item.blocked } : item
+				);
+				tableData = updatedData;
+				showToast(`Token ${actionPastTense} successfully`, 'success');
 			} else {
 				throw new Error(result.message || `Failed to ${action} token`);
 			}
 		} catch (err) {
 			const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-			toastStore.trigger({
-				message: `Failed to ${action} token: ${errorMessage}`,
-				background: 'variant-filled-error',
-				timeout: 5000,
-				classes: 'border-1 !rounded-md'
-			});
+			showToast(`Failed to ${action} token: ${errorMessage}`, 'error');
 		}
 	}
 
-	function handleDndConsider(event: any) {
+	function handleDndConsider(event: CustomEvent) {
 		displayTableHeaders = event.detail.items;
 	}
 
-	function handleDndFinalize(event: CustomEvent<DndEvent<TableHeader>>) {
+	function handleDndFinalize(event: CustomEvent) {
 		displayTableHeaders = event.detail.items;
 		localStorage.setItem('userPaginationSettings', JSON.stringify({ density, displayTableHeaders }));
 	}
@@ -516,52 +501,42 @@
 	function toggleUserList() {
 		showUserList = !showUserList;
 		if (showUsertoken) showUsertoken = false;
-		refreshTableData();
 	}
 
 	function toggleUserToken() {
 		showUsertoken = !showUsertoken;
 		showUserList = false;
-		refreshTableData();
 	}
 
-	// Refresh table data with current filters and sorting
-	function refreshTableData() {
-		// Apply filters and sorting to tableData
-		if (!tableData) return;
-		let filtered = [...tableData];
+	// --- SERVER-SIDE PAGINATION: API handles filtering, sorting, pagination ---
+	// tableData is now the current page from API, not all data
+	// totalItems is the total count from API
 
-		// Apply global search if value exists
-		if (globalSearchValue) {
-			filtered = filtered.filter((row) => Object.values(row).some((value) => String(value).toLowerCase().includes(globalSearchValue.toLowerCase())));
-		}
+	const pagesCount = $derived.by(() => Math.ceil(totalItems / rowsPerPage) || 1);
 
-		// Apply column filters
-		Object.entries(filters).forEach(([key, value]) => {
-			if (value) {
-				filtered = filtered.filter((row) => String(row[key]).toLowerCase().includes(value.toLowerCase()));
-			}
-		});
+	// Derive selected rows from selectedMap; ensure type compatibility by mapping to UserData | TokenData
+	let selectedRows: TableDataType[] = $derived.by(() =>
+		Object.entries(selectedMap)
+			.filter(([, isSelected]) => isSelected)
+			.map(([index]) => tableData[parseInt(index)])
+			.filter((item): item is User | Token => item !== undefined && item !== null)
+	);
 
-		// Apply sorting
-		if (sorting.sortedBy && sorting.isSorted !== 0) {
-			filtered.sort((a, b) => {
-				const aValue = String(a[sorting.sortedBy]).toLowerCase();
-				const bValue = String(b[sorting.sortedBy]).toLowerCase();
-				return sorting.isSorted === 1 ? aValue.localeCompare(bValue) : bValue.localeCompare(aValue);
-			});
-		}
-
-		// Apply pagination
-		const start = (currentPage - 1) * rowsPerPage;
-		const end = start + rowsPerPage;
-		filteredTableData = filtered.slice(start, end);
-		pagesCount = Math.ceil(filtered.length / rowsPerPage) || 1;
-		if (currentPage > pagesCount) currentPage = pagesCount;
-	}
-
+	// Reset selection and page when the data source changes
 	$effect(() => {
-		refreshTableData();
+		void tableData; // track dependency
+		untrack(() => {
+			selectedMap = {};
+			selectAll = false;
+			currentPage = 1;
+		});
+	});
+
+	// Keep current page in bounds when page count shrinks
+	$effect(() => {
+		if (currentPage > pagesCount) {
+			currentPage = pagesCount;
+		}
 	});
 
 	function handleCheckboxChange() {
@@ -575,11 +550,12 @@
 
 	function handleInputChange(value: string, headerKey: string) {
 		if (value) {
+			const newFilters: Record<string, string | undefined> = { ...filters, [headerKey]: value };
 			waitFilter(() => {
-				filters = { ...filters, [headerKey]: value };
+				filters = newFilters;
 			});
 		} else {
-			const newFilters = { ...filters };
+			const newFilters: Record<string, string | undefined> = { ...filters };
 			delete newFilters[headerKey];
 			filters = newFilters;
 		}
@@ -613,9 +589,11 @@
 				<span>{showUsertoken ? m.adminarea_hideusertoken() : m.adminarea_showtoken()}</span>
 			</button>
 
-			{#if showUsertoken && adminData?.tokens}
+			{#if showUsertoken && !showUserList && tableData}
 				{@const now = new Date()}
-				{@const expiredTokens = adminData.tokens.filter((token: TokenData) => token.expires && new Date(token.expires) < now)}
+				{@const expiredTokens = tableData.filter(
+					(item): item is Token => isToken(item) && item.expires != null && new Date(String(item.expires)) < now
+				)}
 				{#if expiredTokens.length > 0}
 					<button
 						onclick={() => (showExpiredTokens = !showExpiredTokens)}
@@ -639,9 +617,7 @@
 		</button>
 	</div>
 
-	{#if isLoading}
-		<Loading />
-	{:else if showUserList || showUsertoken}
+	{#if showUserList || showUsertoken}
 		<div class="my-4 flex flex-wrap items-center justify-between gap-1">
 			<h2 class="order-1 text-xl font-bold text-tertiary-500 dark:text-primary-500">
 				{#if showUserList}{m.adminarea_userlist()}{:else if showUsertoken}{m.adminarea_listtoken()}{/if}
@@ -652,13 +628,7 @@
 			</div>
 
 			<div class="order-2 flex items-center justify-center sm:order-3">
-				<Multibutton
-					{selectedRows}
-					type={showUserList ? 'user' : 'token'}
-					totalUsers={adminData?.users?.length || 0}
-					{currentUser}
-					on:tokenUpdate={handleTokenUpdate}
-				/>
+				<Multibutton {selectedRows} type={showUserList ? 'user' : 'token'} totalUsers={totalItems} {currentUser} on:tokenUpdate={handleTokenUpdate} />
 			</div>
 		</div>
 
@@ -678,7 +648,7 @@
 							onfinalize={handleDndFinalize}
 							class="flex flex-wrap justify-center gap-1 rounded-md p-2"
 						>
-							{#each displayTableHeaders as header (header.id)}
+							{#each displayTableHeaders as header: TableHeader (header.id)}
 								<button
 									class="chip {header.visible ? 'variant-filled-secondary' : 'variant-ghost-secondary'} w-100 mr-2 flex items-center justify-center"
 									animate:flip={{ duration: flipDurationMs }}
@@ -713,7 +683,7 @@
 									{/if}
 								</th>
 
-								{#each displayTableHeaders.filter((header) => header.visible) as header}
+								{#each displayTableHeaders.filter((header) => header.visible) as header (header.id)}
 									<th>
 										<div class="flex items-center justify-between">
 											<FloatingInput
@@ -733,15 +703,15 @@
 							<TableIcons
 								cellClass="w-10 text-center"
 								checked={selectAll}
-								onCheck={(checked) => {
+								onCheck={(checked: boolean) => {
 									selectAll = checked;
-									for (let i = 0; i < filteredTableData.length; i++) {
+									for (let i = 0; i < tableData.length; i++) {
 										selectedMap[i] = checked;
 									}
 								}}
 							/>
 
-							{#each displayTableHeaders.filter((header) => header.visible) as header}
+							{#each displayTableHeaders.filter((header) => header.visible) as header (header.id)}
 								<th
 									onclick={() => {
 										sorting = {
@@ -766,8 +736,9 @@
 					</thead>
 
 					<tbody>
-						{#each filteredTableData as row, index}
-							{@const isExpired = showUsertoken && row.expires && new Date(row.expires) < new Date()}
+						{#each tableData as row, index (isUser(row) ? row._id : isToken(row) ? row.token : index)}
+							{@const expiresVal: string | Date | null = isToken(row) ? row.expires : null}
+							{@const isExpired = showUsertoken && expiresVal && new Date(expiresVal) < new Date()}
 							<tr
 								class="divide-x divide-surface-400 {isExpired ? 'bg-error-50 opacity-60 dark:bg-error-900/20' : ''} {showUsertoken
 									? 'cursor-pointer hover:bg-surface-100 dark:hover:bg-surface-800'
@@ -775,22 +746,22 @@
 								onclick={(event) => {
 									// Only handle click if it's on a token row and not on the checkbox
 									if (showUsertoken && !(event.target as HTMLElement)?.closest('td:first-child')) {
-										editToken(row as TokenData);
+										if (isToken(row)) editToken(row);
 									}
 								}}
 							>
 								<TableIcons
 									checked={selectedMap[index] ?? false}
-									onCheck={(checked) => {
+									onCheck={(checked: boolean) => {
 										selectedMap[index] = checked;
 									}}
 								/>
-								{#each displayTableHeaders.filter((header) => header.visible) as header}
+								{#each displayTableHeaders.filter((header) => header.visible) as header (header.id)}
 									<td class="text-center">
 										{#if header.key === 'blocked'}
 											{#if showUserList}
 												<button
-													onclick={() => toggleUserBlocked(row as UserData)}
+													onclick={() => isUser(row) && toggleUserBlocked(row)}
 													class="btn-sm cursor-pointer rounded-md p-1 transition-all duration-200 hover:scale-105 hover:bg-surface-200 hover:shadow-md dark:hover:bg-surface-600"
 													aria-label={row.blocked ? 'Click to unblock user' : 'Click to block user'}
 													title={row.blocked ? 'Click to unblock user' : 'Click to block user'}
@@ -801,7 +772,7 @@
 												<button
 													onclick={(event) => {
 														event.stopPropagation();
-														toggleTokenBlocked(row as TokenData);
+														if (isToken(row)) toggleTokenBlocked(row);
 													}}
 													class="btn-sm cursor-pointer rounded-md p-1 transition-all duration-200 hover:scale-105 hover:bg-surface-200 hover:shadow-md dark:hover:bg-surface-600"
 													aria-label={row.blocked ? 'Click to unblock token' : 'Click to block token'}
@@ -813,20 +784,31 @@
 										{:else if showUserList && header.key === 'avatar'}
 											<!-- Use reactive avatarSrc for current user, otherwise use row data -->
 											<Avatar
-												src={currentUser && row._id === currentUser._id ? avatarSrc.value : (row[header.key] ?? '/Default_User.svg')}
+												src={currentUser && isUser(row) && row._id === currentUser._id
+													? avatarSrc.value
+													: isUser(row) && header.key === 'avatar'
+														? normalizeMediaUrl(row.avatar)
+														: ''}
 												width="w-8"
 											/>
 										{:else if header.key === 'role'}
-											<Role value={row[header.key]} />
+											<Role
+												value={isUser(row) && header.key === 'role' ? row.role : isToken(row) && header.key === 'role' ? (row.role ?? '') : ''}
+												{roles}
+											/>
 										{:else if header.key === '_id'}
 											<!-- User ID with clipboard functionality -->
 											<div class="flex items-center justify-center gap-2">
-												<span class="font-mono text-sm">{row[header.key]}</span>
+												<span class="font-mono text-sm">{isUser(row) ? row._id : isToken(row) ? row._id : '-'}</span>
 												<button
-													use:clipboard={row[header.key]}
+													use:clipboard={String(isUser(row) ? row._id : isToken(row) ? row._id : '')}
 													class="variant-ghost btn-icon btn-icon-sm hover:variant-filled-tertiary"
 													aria-label="Copy User ID"
 													title="Copy User ID to clipboard"
+													onclick={(event) => {
+														event.stopPropagation();
+														showToast('User ID copied to clipboard', 'success');
+													}}
 												>
 													<iconify-icon icon="oui:copy-clipboard" class="" width="16"></iconify-icon>
 												</button>
@@ -834,22 +816,32 @@
 										{:else if header.key === 'token'}
 											<!-- Token with clipboard functionality -->
 											<div class="flex items-center justify-center gap-2">
-												<span class="max-w-[200px] truncate font-mono text-sm">{row[header.key]}</span>
+												<span class="max-w-[200px] truncate font-mono text-sm">{isToken(row) && header.key === 'token' ? row.token : '-'}</span>
 												<button
-													use:clipboard={row[header.key]}
+													use:clipboard={isToken(row) && header.key === 'token' ? row.token : ''}
 													class="variant-ghost btn-icon btn-icon-sm hover:variant-filled-tertiary"
 													aria-label="Copy Token"
 													title="Copy Token to clipboard"
+													onclick={(event) => {
+														event.stopPropagation();
+														showToast('Token copied to clipboard', 'success');
+													}}
 												>
 													<iconify-icon icon="oui:copy-clipboard" class="" width="16"></iconify-icon>
 												</button>
 											</div>
-										{:else if ['createdAt', 'updatedAt', 'lastAccess'].includes(header.key)}
-											{row[header.key] && row[header.key] !== null ? new Date(row[header.key]).toLocaleString() : '-'}
+										{:else if ['createdAt', 'updatedAt', 'lastAccess', 'expires'].includes(header.key)}
+											{@const dateKey = header.key as 'createdAt' | 'updatedAt' | 'lastAccess' | 'expires'}
+											{@const dateValue = isUser(row) ? row[dateKey as keyof User] : isToken(row) ? row[dateKey as keyof Token] : undefined}
+											{formatDate(dateValue)}
 										{:else if header.key === 'expires'}
-											{#if row[header.key] && row[header.key] !== null}
-												{@const isTokenExpired = new Date(row[header.key]) < new Date()}
-												{@const remainingTime = getRemainingTime(row[header.key])}
+											{#if isToken(row) && header.key === 'expires' && row.expires}
+												{@const expiresVal = row.expires as string | Date | null}
+												{@const isTokenExpired =
+													expiresVal !== null &&
+													expiresVal !== undefined &&
+													(expiresVal instanceof Date ? expiresVal : new Date(String(expiresVal))) < new Date()}
+												{@const remainingTime = getRemainingTime(expiresVal)}
 												<span class={isTokenExpired ? 'font-semibold text-error-500' : ''}>
 													{remainingTime}
 													{#if isTokenExpired}
@@ -860,8 +852,13 @@
 												-
 											{/if}
 										{:else}
+											{@const displayValue = isUser(row)
+												? String(row[header.key as keyof User] ?? '-')
+												: isToken(row)
+													? String(row[header.key as keyof Token] ?? '-')
+													: '-'}
 											<!-- eslint-disable-next-line svelte/no-at-html-tags -->
-											{@html row[header.key] || '-'}
+											{@html displayValue}
 										{/if}
 									</td>
 								{/each}
@@ -877,12 +874,12 @@
 					bind:currentPage
 					bind:rowsPerPage
 					{pagesCount}
-					totalItems={filteredTableData.length}
+					{totalItems}
 					rowsPerPageOptions={[2, 10, 25, 50, 100, 500]}
-					onUpdatePage={(page) => {
+					onUpdatePage={(page: number) => {
 						currentPage = page;
 					}}
-					onUpdateRowsPerPage={(rows) => {
+					onUpdateRowsPerPage={(rows: number) => {
 						rowsPerPage = rows;
 						currentPage = 1;
 					}}

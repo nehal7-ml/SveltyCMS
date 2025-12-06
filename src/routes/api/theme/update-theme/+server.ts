@@ -15,14 +15,14 @@
 import type { RequestHandler } from './$types';
 import { ThemeManager } from '@src/databases/themeManager';
 import { dbAdapter } from '@src/databases/db';
-import type { Theme } from '@src/databases/dbInterface';
+import type { DatabaseId } from '@src/databases/dbInterface';
 import { json, error } from '@sveltejs/kit';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Permission checking
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Initialize ThemeManager singleton
 const themeManager = ThemeManager.getInstance();
@@ -35,15 +35,15 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		return json({ success: false, error: 'Unauthorized' }, { status: 401 });
 	}
 
-	if (privateEnv.MULTI_TENANT && !tenantId) {
+	if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 		throw error(400, 'Tenant could not be identified for this operation.');
-	} // Parse the request body
+	}
 
-	const { themeName } = await request.json();
+	const { themeId, customCss } = await request.json();
 
-	if (!themeName || typeof themeName !== 'string') {
-		logger.warn(`Invalid theme name provided: ${themeName}`, { tenantId });
-		throw error(400, 'Invalid theme name.');
+	if (!themeId || typeof themeId !== 'string') {
+		logger.warn(`Invalid theme ID provided: ${themeId}`, { tenantId });
+		throw error(400, 'Invalid theme ID.');
 	}
 
 	try {
@@ -51,31 +51,25 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			throw new Error('Database adapter is not initialized');
 		}
 
-		// --- MULTI-TENANCY: Scope the query by tenantId ---
-		const query: { name: string; tenantId?: string } = { name: themeName };
-		if (privateEnv.MULTI_TENANT) {
-			query.tenantId = tenantId;
-		} // Fetch the theme from the database to ensure it exists for the current tenant
+		// Fetch the theme from the database to ensure it exists for the current tenant
+		const themeResult = await dbAdapter.themes.update(themeId as unknown as DatabaseId, { customCss });
 
-		const selectedTheme: Theme | null = await dbAdapter.findOne('themes', query);
+		if (!themeResult.success || !themeResult.data) {
+			logger.warn(`Theme '${themeId}' does not exist or update failed for this tenant.`, { tenantId });
+			throw error(404, `Theme '${themeId}' does not exist or update failed.`);
+		}
 
-		if (!selectedTheme) {
-			logger.warn(`Theme '${themeName}' does not exist for this tenant.`, { tenantId });
-			throw error(404, `Theme '${themeName}' does not exist.`);
-		} // Set the selected theme as the default in the database for the current tenant
+		const updatedTheme = themeResult.data;
 
-		await dbAdapter.setDefaultTheme(themeName, tenantId); // Update the theme in ThemeManager for the current tenant
+		// Invalidate theme cache after update
+		await themeManager.refresh();
 
-		await themeManager.setTheme(selectedTheme, tenantId); // Fetch the updated default theme to confirm the change for the current tenant
-
-		const updatedTheme: Theme = await themeManager.getTheme(tenantId);
-
-		logger.info(`Theme successfully updated to '${updatedTheme.name}' by user '${user.id}'.`, { tenantId });
+		logger.info(`Theme '${updatedTheme.name}' custom CSS successfully updated by user '${user._id}'.`, { tenantId });
 
 		return json({ success: true, theme: updatedTheme });
 	} catch (err) {
 		const errorMessage = err instanceof Error ? err.message : String(err);
-		logger.error('Error updating theme:', { error: errorMessage, tenantId });
-		return json({ success: false, error: `Error updating theme: ${err.message}` }, { status: 500 });
+		logger.error('Error updating theme custom CSS:', { error: errorMessage, tenantId });
+		return json({ success: false, error: `Error updating theme custom CSS: ${errorMessage}` }, { status: 500 });
 	}
 };

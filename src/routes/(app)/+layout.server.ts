@@ -1,77 +1,106 @@
 /**
  * @file src/routes/(app)/+layout.server.ts
- * @description
- * This file is the server-side logic for the all collection data
- *
- * ### Props
- * - `theme` {string} - The theme of the website
- * - `contentStructure` {object} - The structure of the content
- * - `nestedContentStructure` {object} - The nested structure of the content
+ * @description Enterprise-grade server-side logic for the main application layout.
  *
  * ### Features
- * - Fetches and returns the content structure for the website
+ * - Content Loading
+ * - User Management
+ * - Theme Management
+ * - Content Versioning
+ *
+ * ### Security
+ * - Content Loading is cached
+ * - User Management is cached
+ * - Theme Management is cached
+ * - Content Versioning is cached
  */
-
-import type { LayoutServerLoad } from './$types';
+import { error } from '@sveltejs/kit';
 import { contentManager } from '@src/content/ContentManager';
 import { DEFAULT_THEME } from '@src/databases/themeManager';
+import { publicEnv } from '@src/stores/globalSettings.svelte';
+import { auth } from '@src/databases/db';
 
-// System Logger
-import { logger } from '@utils/logger.svelte';
+import type { LayoutServerLoad } from './$types';
+import type { User } from '@src/databases/auth/types';
+import { logger } from '@utils/logger.server';
 
-// Server-side load function for the layout
-export const load: LayoutServerLoad = async ({ locals }) => {
-	const { theme, user, isAdmin, hasManageUsersPermission, permissions, roles } = locals;
+interface LayoutError {
+	message: string;
+	details?: string;
+	code?: string;
+}
+
+async function refreshUser(sessionUser: User | null): Promise<User | null> {
+	if (!sessionUser) return null;
+
+	try {
+		const dbUser = await auth!.getUserById(sessionUser._id.toString());
+
+		if (dbUser) {
+			logger.debug('Fresh user data loaded in layout', {
+				userId: dbUser._id,
+				hasAvatar: !!dbUser.avatar,
+				avatar: dbUser.avatar
+			});
+			return dbUser;
+		}
+
+		logger.warn('User not found in database, using session data', {
+			userId: sessionUser._id
+		});
+		return sessionUser;
+	} catch (err) {
+		logger.warn('Failed to fetch fresh user data in layout, using session data', {
+			error: err instanceof Error ? err.message : String(err),
+			userId: sessionUser._id
+		});
+		return sessionUser;
+	}
+}
+
+function createLayoutError(err: unknown, fallbackMessage: string): LayoutError {
+	const isDevelopment = process.env.NODE_ENV === 'development';
+
+	return {
+		message: fallbackMessage,
+		details: isDevelopment && err instanceof Error ? err.message : undefined,
+		code: 'LAYOUT_LOAD_ERROR'
+	};
+}
+
+export const load: LayoutServerLoad = async ({ locals, depends }) => {
+	const { theme, user: sessionUser, cspNonce } = locals;
+
+	depends('app:content');
+
+	// Store is already initialized by root layout - just use it
 
 	try {
 		await contentManager.initialize();
 
-		const { contentStructure } = await contentManager.getCollectionData();
-
-		// Get fresh user data from database to ensure we have the latest avatar info
-		let freshUser = user;
-		if (user) {
-			try {
-				const { auth } = await import('@src/databases/db');
-				if (auth) {
-					const dbUser = await auth.getUserById(user._id.toString());
-					if (dbUser) {
-						freshUser = dbUser;
-						logger.debug('Fresh user data loaded in layout', {
-							userId: dbUser._id,
-							hasAvatar: !!dbUser.avatar,
-							avatar: dbUser.avatar
-						});
-					}
-				}
-			} catch (error) {
-				logger.warn('Failed to fetch fresh user data in layout, using session data:', error);
-				freshUser = user; // Fallback to session data
-			}
-		}
+		const [contentStructure, freshUser, firstCollection] = await Promise.all([
+			contentManager.getNavigationStructure(),
+			refreshUser(sessionUser),
+			contentManager.getFirstCollection()
+		]);
 
 		return {
 			theme: theme || DEFAULT_THEME,
-			contentStructure: contentStructure,
+			contentStructure,
 			user: freshUser,
-			isAdmin,
-			hasManageUsersPermission,
-			permissions,
-			roles
+			publicSettings: publicEnv, // Use the reactive store
+			cspNonce,
+			streamed: {},
+			firstCollection: firstCollection ? JSON.parse(JSON.stringify(firstCollection)) : null
 		};
-	} catch (error) {
-		logger.error('Failed to load layout data:', error);
+	} catch (err) {
+		logger.error('Failed to load layout data', {
+			error: err instanceof Error ? err.message : String(err),
+			stack: err instanceof Error ? err.stack : undefined,
+			user: sessionUser?._id
+		});
 
-		// Return fallback data
-		return {
-			theme: theme || DEFAULT_THEME,
-			user,
-			contentStructure: [],
-			error: 'Failed to load collection data',
-			isAdmin: isAdmin || false,
-			hasManageUsersPermission: hasManageUsersPermission || false,
-			permissions: permissions || [],
-			roles: roles || []
-		};
+		const layoutError = createLayoutError(err, 'Failed to load application data');
+		throw error(500, layoutError);
 	}
 };

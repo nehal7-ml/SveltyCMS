@@ -24,21 +24,19 @@ Key features:
 
 <script lang="ts">
 	// Utils
+	import type { MediaBase, MediaImage, MediaTypeEnum } from '@utils/media/mediaModels';
+	import { logger } from '@utils/logger';
 	import { formatBytes } from '@utils/utils';
-	import { getMediaUrlSafe } from '@utils/media/mediaUtils';
-	import { publicEnv } from '@root/config/public';
-	import type { MediaBase, MediaTypeEnum } from '@utils/media/mediaModels';
-
 	// Components
-	import TablePagination from '@components/system/table/TablePagination.svelte';
 	import TableFilter from '@components/system/table/TableFilter.svelte';
 	import TableIcons from '@components/system/table/TableIcons.svelte';
+	import TablePagination from '@components/system/table/TablePagination.svelte';
 
 	interface Props {
-		filteredFiles?: MediaBase[];
-		tableSize?: 'small' | 'medium' | 'large';
-		ondeleteImage?: (file: MediaBase) => void;
-		onSelectionChange?: (selectedFiles: MediaBase[]) => void;
+		filteredFiles?: (MediaBase | MediaImage)[];
+		tableSize?: 'tiny' | 'small' | 'medium' | 'large';
+		ondeleteImage?: (file: MediaBase | MediaImage) => void;
+		onSelectionChange?: (selectedFiles: (MediaBase | MediaImage)[]) => void;
 	}
 
 	interface SortableMedia extends MediaBase {
@@ -47,7 +45,7 @@ Key features:
 		type: MediaTypeEnum;
 	}
 
-	let { filteredFiles = $bindable([]), tableSize, ondeleteImage = () => {}, onSelectionChange = () => {} }: Props = $props();
+	let { filteredFiles = $bindable([]), tableSize = 'medium', ondeleteImage = () => {}, onSelectionChange = () => {} }: Props = $props();
 
 	// Filter state
 	let globalSearchValue = $state('');
@@ -56,9 +54,9 @@ Key features:
 	let density = $state('normal');
 
 	// Selection state
-	let selectedFiles = $state<Set<string>>(new Set());
+	const selectedFiles = $state<Set<string>>(new Set());
 
-	function handleSelection(file: MediaBase, checked: boolean) {
+	function handleSelection(file: MediaBase | MediaImage, checked: boolean) {
 		if (checked) {
 			selectedFiles.add(file.filename);
 		} else {
@@ -70,10 +68,10 @@ Key features:
 	// Pagination state
 	let currentPage = $state(1);
 	let rowsPerPage = $state(10);
-	let pagesCount = $derived(Math.ceil(filteredFiles.length / rowsPerPage));
-	let paginatedFiles = $derived(filteredFiles.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage));
+	const pagesCount = $derived(Math.ceil(filteredFiles.length / rowsPerPage));
+	const paginatedFiles = $derived(filteredFiles.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage));
 
-	function handleDelete(file: MediaBase) {
+	function handleDelete(file: MediaBase | MediaImage) {
 		ondeleteImage(file);
 	}
 
@@ -91,11 +89,25 @@ Key features:
 
 		filteredFiles = filteredFiles.sort((a, b) => {
 			if (column === 'size') {
-				return (a[column] - b[column]) * sortOrder;
+				return ((a[column] ?? 0) - (b[column] ?? 0)) * sortOrder;
 			} else {
 				return String(a[column as keyof SortableMedia]).localeCompare(String(b[column as keyof SortableMedia])) * sortOrder;
 			}
 		});
+	}
+
+	function getThumbnails(file: MediaBase | MediaImage) {
+		return 'thumbnails' in file ? file.thumbnails || {} : {};
+	}
+
+	function getThumbnail(file: MediaBase | MediaImage, size: string) {
+		const thumbnails = getThumbnails(file);
+		return thumbnails ? thumbnails[size as keyof typeof thumbnails] : undefined;
+	}
+
+	function getImageUrl(file: MediaBase | MediaImage, size: string) {
+		const thumbnail = getThumbnail(file, size);
+		return thumbnail?.url || (file as any).url;
 	}
 </script>
 
@@ -141,18 +153,18 @@ Key features:
 							<TableIcons
 								cellClass="w-10 text-center"
 								checked={selectedFiles.has(file.filename)}
-								onCheck={(checked) => handleSelection(file, checked)}
+								onCheck={(checked: boolean) => handleSelection(file, checked)}
 							/>
 							<td>
 								{#if file?.filename && file?.path && file?.hash}
 									<img
-										src={getMediaUrlSafe(file, 'thumbnail')}
+										src={getImageUrl(file, tableSize) ?? '/static/Default_User.svg'}
 										alt={`Thumbnail for ${file.filename}`}
-										class={`relative -top-4 left-0 ${tableSize === 'small' ? 'h-32 w-auto' : tableSize === 'medium' ? 'h-48 w-44' : 'h-80 w-80'}`}
+										class={`object-cover ${tableSize === 'tiny' ? 'h-10 w-10' : tableSize === 'small' ? 'h-16 w-16' : tableSize === 'medium' ? 'h-24 w-24' : 'h-32 w-32'}`}
 										onerror={(e: Event) => {
 											const target = e.target as HTMLImageElement;
 											if (target) {
-												console.error('Failed to load media thumbnail for file:', file.filename);
+												logger.error('Failed to load media thumbnail for file:', file.filename);
 												target.src = '/static/Default_User.svg';
 												target.alt = 'Fallback thumbnail image';
 											}
@@ -181,7 +193,13 @@ Key features:
 							<td>{file.type || 'Unknown'}</td>
 							<td>{file.path}</td>
 							<td>
-								<button onclick={() => handleDelete(file)} class="variant-filled-primary btn btn-sm" aria-label="Delete"> Delete </button>
+								<a
+									href="/imageEditor?mediaId={file._id?.toString()}"
+									class="variant-ghost-primary btn btn-sm"
+									aria-label="Edit"
+									data-sveltekit-preload-data="hover">Edit</a
+								>
+								<button onclick={() => handleDelete(file)} class="variant-filled-error btn btn-sm" aria-label="Delete"> Delete </button>
 							</td>
 						</tr>
 					{/each}
@@ -198,10 +216,10 @@ Key features:
 					{pagesCount}
 					totalItems={filteredFiles.length}
 					rowsPerPageOptions={[5, 10, 25, 50, 100]}
-					onUpdatePage={(page) => {
+					onUpdatePage={(page: number) => {
 						currentPage = page;
 					}}
-					onUpdateRowsPerPage={(rows) => {
+					onUpdateRowsPerPage={(rows: number) => {
 						rowsPerPage = rows;
 						currentPage = 1;
 					}}

@@ -13,22 +13,25 @@
  * server-side logic for handling file uploads.
  */
 
-import { publicEnv } from '@root/config/public';
+// Use DB-backed public settings with safe fallbacks
+import { publicEnv } from '@src/stores/globalSettings.svelte';
 import { error, redirect } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
 // Utils
-import mime from 'mime-types';
-import { saveImage, saveDocument, saveAudio, saveVideo } from '@utils/media/mediaProcessing';
-import { constructUrl } from '@utils/media/mediaUtils';
-import type { SystemVirtualFolder } from '@root/src/databases/dbInterface';
+import type { SystemVirtualFolder, QueryFilter, MediaItem } from '@root/src/databases/dbInterface';
+import type { DatabaseId } from '@root/src/content/types';
 import type { MediaAccess } from '@root/src/utils/media/mediaModels';
+import { MediaService } from '@src/services/MediaService.server';
+import { constructUrl } from '@utils/media/mediaUtils';
+import { moveMediaToTrash } from '@utils/media/mediaStorage.server';
+import mime from 'mime-types';
 
 // Auth
 import { dbAdapter } from '@src/databases/db';
 
 // System Logger
-import { logger, type LoggableValue } from '@utils/logger.svelte';
+import { logger, type LoggableValue } from '@utils/logger.server';
 
 interface StackItem {
 	parent: Record<string, unknown> | Array<unknown> | null;
@@ -36,45 +39,46 @@ interface StackItem {
 	value: unknown;
 }
 
-function convertIdToString(obj: Record<string, unknown> | Array<unknown>): Record<string, unknown> | Array<unknown> {
+function convertIdToString(obj: unknown): unknown {
 	const stack: StackItem[] = [{ parent: null, key: '', value: obj }];
 	const seen = new WeakSet();
-	const root: Record<string, unknown> | Array<unknown> = Array.isArray(obj) ? [] : {};
+	const root: unknown = {};
 
 	while (stack.length) {
 		const { parent, key, value } = stack.pop()!;
 
 		// If value is not an object, assign directly
 		if (value === null || typeof value !== 'object') {
-			if (parent) parent[key] = value;
+			if (parent) (parent as Record<string, unknown>)[key] = value;
 			continue;
 		}
 
 		// Handle circular references
 		if (seen.has(value)) {
-			if (parent) parent[key] = value;
+			if (parent) (parent as Record<string, unknown>)[key] = value;
 			continue;
 		}
 		seen.add(value);
 
-		// Initialize object or array
-		const result: Record<string, unknown> | Array<unknown> = Array.isArray(value) ? [] : {};
-		if (parent) parent[key] = result;
+		// Initialize object
+		const result: Record<string, unknown> = {};
+		if (parent) (parent as Record<string, unknown>)[key] = result;
 
-		// Process each key/value pair or array element
-		for (const k in value) {
-			if (value[k] === null) {
-				root[k] = null;
+		// Process each key/value pair
+		for (const k in value as Record<string, unknown>) {
+			const val = (value as Record<string, unknown>)[k];
+			if (val === null) {
+				result[k] = null;
 			} else if (k === '_id' || k === 'parent') {
-				root[k] = value[k]?.toString() || null;
+				result[k] = val?.toString() || null;
 				// Convert _id or parent to string
-			} else if (Buffer.isBuffer(value[k])) {
-				root[k] = value[k].toString('hex'); // Convert Buffer to hex string
-			} else if (typeof value[k] === 'object') {
+			} else if (Buffer.isBuffer(val)) {
+				result[k] = val.toString('hex'); // Convert Buffer to hex string
+			} else if (typeof val === 'object') {
 				// Add object to the stack for further processing
-				stack.push({ parent: result, key: k, value: value[k] });
+				stack.push({ parent: result, key: k, value: val });
 			} else {
-				root[k] = value[k]; // Assign primitive values
+				result[k] = val; // Assign primitive values
 			}
 		}
 	}
@@ -91,9 +95,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 	try {
 		// User is already validated in hooks.server.ts
-		const { user } = locals;
+		const { user, isAdmin, roles: tenantRoles } = locals;
 		if (!user) {
 			throw redirect(302, '/login');
+		}
+
+		// Check if user has permission to access media gallery
+		const hasMediaPermission =
+			isAdmin ||
+			Object.values(tenantRoles).some(
+				(role) =>
+					((role as { permissions?: string[] }).permissions || []).includes('media:read') ||
+					((role as { permissions?: string[] }).permissions || []).includes('media:write')
+			);
+
+		if (!hasMediaPermission) {
+			logger.warn(`User ${user._id} does not have permission to access media gallery`);
+			throw error(403, 'Insufficient permissions to access media gallery');
 		}
 
 		const folderId = url.searchParams.get('folderId'); // Get folderId from URL
@@ -107,20 +125,23 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			throw error(500, 'Failed to fetch virtual folders');
 		}
 
-		const serializedVirtualFolders = allVirtualFoldersResult.data.map((folder) => convertIdToString(folder));
+		// Ensure data is an array
+		const virtualFoldersData = Array.isArray(allVirtualFoldersResult.data) ? allVirtualFoldersResult.data : [];
+
+		const serializedVirtualFolders = virtualFoldersData.map((folder) => convertIdToString(folder as unknown));
 
 		// Determine current folder
-		const currentFolder = folderId ? serializedVirtualFolders.find((f) => f._id === folderId) || null : null;
-		logger.debug('Current folder determined:', currentFolder);
+		const currentFolder = folderId ? serializedVirtualFolders.find((f) => (f as Record<string, unknown>)._id === folderId) || null : null;
+		logger.trace('Current folder determined:', currentFolder);
 
-		// Fetch from all media collections since MediaItem doesn't exist
-		const mediaCollections = ['media_images', 'media_documents', 'media_audio', 'media_videos'];
+		// Fetch from all media collections including the primary MediaItem collection
+		const mediaCollections = ['MediaItem', 'media_images', 'media_documents', 'media_audio', 'media_videos'];
 		const allMediaResults: Record<string, unknown>[] = [];
 
 		for (const collection of mediaCollections) {
 			try {
-				const query: Record<string, string | boolean | null> = {
-					folderId: folderId || null,
+				const query: QueryFilter<MediaItem> = {
+					folderId: folderId as DatabaseId | null,
 					// Filter out deleted items
 					$or: [{ isDeleted: { $ne: true } }, { isDeleted: { $exists: false } }]
 				};
@@ -128,7 +149,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 
 				if (result.success && result.data) {
 					// Add collection type to each item for processing
-					const itemsWithType = result.data.map((item: Record<string, unknown>) => ({
+					const itemsWithType = result.data.map((item) => ({
 						...item,
 						collection: collection
 					}));
@@ -140,7 +161,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			}
 		}
 
-		logger.info(`Fetched \x1b[31m${allMediaResults.length}\x1b[0m total media items from all collections`);
+		logger.info(`Fetched ${allMediaResults.length} total media items from all collections`);
 
 		if (allMediaResults.length === 0) {
 			logger.info('No media items found in any collection');
@@ -155,7 +176,7 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			return acc;
 		}, []);
 
-		logger.info(`After deduplication: \x1b[31m${deduplicatedMedia.length}\x1b[0m unique media items`);
+		logger.info(`After deduplication: ${deduplicatedMedia.length} unique media items`);
 
 		// Process and flatten media results - Filter and validate media items before processing
 		const processedMedia = deduplicatedMedia
@@ -179,24 +200,34 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 			})
 			.map((item) => {
 				try {
-					const extension = mime.extension(item.mimeType!) || '';
-					const filename = item.filename!.replace(`.${extension}`, '');
+					const mediaItem = item as unknown as MediaItem;
+					const extension = mime.extension(mediaItem.mimeType) || '';
+					const filename = mediaItem.filename.replace(`.${extension}`, '');
 
-					if (!publicEnv.MEDIA_FOLDER) {
-						logger.error('Media folder configuration missing');
-						throw new Error('Media folder configuration missing');
+					// MEDIA_FOLDER may not be eagerly available; use a safe default
+					const mediaFolder = publicEnv.MEDIA_FOLDER || 'mediaFiles';
+					if (!mediaFolder) {
+						logger.warn('MEDIA_FOLDER not set; proceeding with defaults');
 					}
 
-					// Build thumbnail URL via helper (no hard-coded routes)
-					const effectivePath = (item as Record<string, string | undefined>).path ?? '/global';
-					const thumbnailUrl = constructUrl(effectivePath, item.hash!, filename, extension, 'images', 'thumbnail');
+					// Extract base path (e.g., 'global' from 'global/original/...')
+					const rawPath = mediaItem.path ?? 'global';
+					// Remove leading slashes and 'files/' prefix if present
+					let cleanPath = rawPath.replace(/^\/+/, '').replace(/^files\//, '');
+					// Get the first segment as the base path (e.g., 'global')
+					const basePath = cleanPath.split('/')[0] || 'global';
+
+					// Build thumbnail URL
+					// constructUrl(path, hash, fileName, format, contentTypes, size)
+					const thumbnailUrl = constructUrl(basePath, mediaItem.hash, filename, extension, basePath, 'thumbnail');
 
 					return {
-						...item,
-						path: item.path ?? 'global',
-						name: item.filename ?? 'unnamed-media',
+						...mediaItem,
+						type: mediaItem.mimeType.split('/')[0], // Derive from mimeType
+						path: mediaItem.path ?? 'global',
+						name: mediaItem.filename ?? 'unnamed-media',
 						// Use the item's path if available when constructing the original URL
-						url: constructUrl((item.path ?? '/global') as string, item.hash!, filename, extension, 'images', 'original'),
+						url: constructUrl(basePath, mediaItem.hash, filename, extension, basePath),
 						thumbnail: {
 							url: thumbnailUrl
 						}
@@ -235,8 +266,8 @@ export const load: PageServerLoad = async ({ locals, url }) => {
 };
 
 export const actions: Actions = {
-	// Default action for file upload
-	default: async ({ request, locals }) => {
+	// Upload action for file upload
+	upload: async ({ request, locals }) => {
 		if (!dbAdapter) {
 			logger.error('Database adapter is not initialized');
 			throw error(500, 'Internal Server Error');
@@ -252,58 +283,27 @@ export const actions: Actions = {
 			const formData = await request.formData();
 			const files = formData.getAll('files');
 
-			// Map of file types to their respective save functions
-			const save_media_file = {
-				application: saveDocument,
-				audio: saveAudio,
-				font: saveDocument,
-				example: saveDocument,
-				image: saveImage,
-				message: saveDocument,
-				model: saveDocument,
-				multipart: saveDocument,
-				text: saveDocument,
-				video: saveVideo
-			};
+			const mediaService = new MediaService(dbAdapter);
 
-			const collection_names: Record<string, string> = {
-				application: 'media_documents',
-				audio: 'media_audio',
-				font: 'media_documents',
-				example: 'media_documents',
-				image: 'media_images',
-				message: 'media_documents',
-				model: 'media_documents',
-				multipart: 'media_documents',
-				text: 'media_documents',
-				video: 'media_videos'
-			};
-			const access = {
-				userId: user._id,
-				roleId: user.role,
-				permissions: locals.user?.permissions
-			} as MediaAccess;
+			const access: MediaAccess = 'public'; // or 'private'/'protected' based on your needs
+
 			for (const file of files) {
 				if (file instanceof File) {
-					const type = file.type.split('/')[0] as keyof typeof save_media_file;
-					if (type in save_media_file) {
-						const { fileInfo } = await save_media_file[type](file, collection_names[type], user._id, access);
-						const insertResult = await dbAdapter.crud.insertMany(collection_names[type], [{ ...fileInfo, user: user._id }]);
-
-						if (!insertResult.success) {
-							if (insertResult.error?.message?.includes('duplicate')) {
-								throw new Error(`A file with name "${file.name}" already exists`);
-							}
-							throw new Error(insertResult.error?.message || 'Failed to save file');
-						}
+					try {
+						// Use MediaService.saveMedia which handles all media types
+						await mediaService.saveMedia(file, user._id, access, 'global');
 						logger.info(`File uploaded successfully: ${file.name}`);
-					} else {
-						logger.warn(`Unsupported file type: ${file.type}`);
+					} catch (fileError) {
+						const errorMessage = fileError instanceof Error ? fileError.message : String(fileError);
+						if (errorMessage.includes('duplicate')) {
+							logger.warn(`A file with name "${file.name}" already exists`);
+							throw new Error(`A file with name "${file.name}" already exists`);
+						}
+						throw new Error(errorMessage);
 					}
 				}
 			}
 
-			// TODO: Add back invalidation when upgrading SvelteKit
 			return { success: true };
 		} catch (err) {
 			let userMessage = 'Error uploading file';
@@ -323,37 +323,132 @@ export const actions: Actions = {
 
 	// Action to delete a media file
 	deleteMedia: async ({ request }) => {
-		logger.warn('Request Body', await request.json());
-		const image = (await request.json())?.image;
-		logger.debug('Received delete request for image:', image);
+		try {
+			const formData = await request.formData();
+			const imageDataStr = formData.get('imageData');
 
-		if (!image || !image._id) {
-			logger.error('Invalid image data received');
-			throw error(400, 'Invalid image data received');
+			logger.info('Delete request received, imageDataStr:', imageDataStr);
+
+			if (!imageDataStr || typeof imageDataStr !== 'string') {
+				logger.error('Invalid image data received - not a string');
+				throw error(400, 'Invalid image data received');
+			}
+
+			const image = JSON.parse(imageDataStr);
+			logger.warn('Parsed image data:', image);
+			logger.trace('Received delete request for image:', image);
+
+			if (!image || !image._id) {
+				logger.error('Invalid image data received - no _id');
+				throw error(400, 'Invalid image data received');
+			}
+
+			if (!dbAdapter) {
+				logger.error('Database adapter is not initialized.');
+				throw error(500, 'Internal Server Error');
+			}
+
+			// Move file to trash before deleting from database
+			try {
+				if (image.url) {
+					await moveMediaToTrash(image.url);
+					logger.info('File moved to trash:', image.url);
+				}
+
+				// Also move thumbnails to trash if they exist
+				if (image.thumbnails) {
+					for (const size in image.thumbnails) {
+						if (image.thumbnails[size]?.url) {
+							await moveMediaToTrash(image.thumbnails[size].url);
+							logger.info('Thumbnail moved to trash:', image.thumbnails[size].url);
+						}
+					}
+				}
+			} catch (trashError) {
+				logger.error('Error moving files to trash:', trashError);
+				// Continue with database deletion even if trash move fails
+			}
+
+			// Determine which collection to delete from - default to MediaItem if not specified
+			const collection = image.collection || 'MediaItem';
+			logger.info(`Deleting image from collection '${collection}': ${image._id}`);
+
+			const result = await dbAdapter.crud.delete(collection, image._id.toString());
+
+			if (result.success) {
+				logger.info('Image deleted successfully from', collection);
+				// TODO: Add back invalidation when upgrading SvelteKit
+				return { success: true }; // Return true on success
+			} else {
+				logger.error('Failed to delete image from database:', result);
+				throw error(500, result.message || 'Failed to delete image');
+			}
+		} catch (err) {
+			logger.error('Error in deleteMedia action:', err as LoggableValue);
+			throw error(500, err instanceof Error ? err.message : 'Internal Server Error');
 		}
+	},
 
+	remoteUpload: async ({ request, locals }) => {
 		if (!dbAdapter) {
-			logger.error('Database adapter is not initialized.');
+			logger.error('Database adapter is not initialized');
 			throw error(500, 'Internal Server Error');
 		}
 
 		try {
-			logger.info(`Deleting image: ${image._id}`);
-			const success = await dbAdapter.deleteMedia(image._id.toString());
-
-			if (success) {
-				logger.info('Image deleted successfully');
-				// TODO: Add back invalidation when upgrading SvelteKit
-				return { success: true }; // Return true on success
-			} else {
-				// Log the failure but maybe don't throw a 500, return success: false?
-				// Or keep throwing error if deletion failure is critical. Let's keep the error for now.
-				logger.error('Failed to delete image from database.');
-				throw error(500, 'Failed to delete image');
+			const user = locals.user;
+			if (!user) {
+				logger.warn('No user found in locals during file upload');
+				throw redirect(302, '/login');
 			}
+
+			const formData = await request.formData();
+			const remoteUrls = JSON.parse(formData.get('remoteUrls') as string) as string[];
+
+			if (!remoteUrls || !Array.isArray(remoteUrls) || remoteUrls.length === 0) {
+				throw new Error('No URLs provided');
+			}
+
+			const mediaService = new MediaService(dbAdapter);
+			const access: MediaAccess = 'public'; // or 'private'/'protected' based on your needs
+
+			for (const url of remoteUrls) {
+				try {
+					const response = await fetch(url);
+					if (!response.ok) {
+						logger.warn(`Failed to fetch remote URL: ${url}`);
+						continue;
+					}
+					const arrayBuffer = await response.arrayBuffer();
+					const buffer = Buffer.from(arrayBuffer);
+					const contentType = response.headers.get('content-type') || 'application/octet-stream';
+					const filename = url.substring(url.lastIndexOf('/') + 1);
+
+					const file = new File([buffer], filename, { type: contentType });
+
+					// Use MediaService.saveMedia which handles all media types
+					await mediaService.saveMedia(file, user._id, access, 'global');
+					logger.info(`Remote file uploaded successfully: ${file.name}`);
+				} catch (fileError) {
+					const errorMessage = fileError instanceof Error ? fileError.message : String(fileError);
+					if (errorMessage.includes('duplicate')) {
+						logger.warn(`A file from URL "${url}" already exists`);
+					} else {
+						logger.error(`Failed to upload file from ${url}: ${errorMessage}`);
+					}
+					// Continue with next URL instead of throwing
+					continue;
+				}
+			}
+
+			return { success: true };
 		} catch (err) {
-			logger.error('Error deleting image:', err as LoggableValue);
-			throw error(500, 'Internal Server Error');
+			let userMessage = 'Error uploading file';
+			if (err instanceof Error) {
+				userMessage = err.message;
+			}
+			logger.error(`Error during remote file upload: ${err instanceof Error ? err.message : String(err)}`);
+			throw error(400, userMessage);
 		}
 	}
 };

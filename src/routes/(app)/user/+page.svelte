@@ -15,16 +15,10 @@
 -->
 
 <script lang="ts">
-	import { privateEnv } from '@root/config/private';
 	import { invalidateAll } from '$app/navigation';
-	import axios from 'axios';
 	import { onMount } from 'svelte';
-	import type { PageData } from './$types';
-
 	// Auth
-	import type { User } from '@src/auth/types';
-	import TwoFactorAuth from './components/TwoFactorAuth.svelte';
-
+	import ModalTwoFactorAuth from './components/ModalTwoFactorAuth.svelte';
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
@@ -32,39 +26,58 @@
 	import '@stores/store.svelte';
 	import { avatarSrc } from '@stores/store.svelte';
 	import { triggerActionStore } from '@utils/globalSearchIndex';
-
 	// Components
 	import PageTitle from '@components/PageTitle.svelte';
 	import PermissionGuard from '@components/PermissionGuard.svelte';
 	import AdminArea from './components/AdminArea.svelte';
-
 	// Skeleton
 	import type { ModalComponent, ModalSettings } from '@skeletonlabs/skeleton';
-	import { Avatar, getModalStore, getToastStore } from '@skeletonlabs/skeleton';
-	import { collection } from '@src/stores/collectionStore.svelte';
+	import { Avatar } from '@skeletonlabs/skeleton';
+	import { setCollection } from '@src/stores/collectionStore.svelte';
+	import { showConfirm, showModal } from '@utils/modalUtils';
+	import { showToast } from '@utils/toast';
 	import ModalEditAvatar from './components/ModalEditAvatar.svelte';
 	import ModalEditForm from './components/ModalEditForm.svelte';
 
-	const toastStore = getToastStore();
-	const modalStore = getModalStore();
-
 	// Props
-	let { data } = $props<{ data: PageData }>();
-	let { user: serverUser, isFirstUser, isMultiTenant } = $derived(data);
+	const { data } = $props();
+	const { user: serverUser, isFirstUser, isMultiTenant, is2FAEnabledGlobal } = $derived(data);
 
 	// Make user data reactive
-	let user = $derived<User>({
+	const user = $derived({
 		_id: serverUser?._id ?? '',
 		email: serverUser?.email ?? '',
 		username: serverUser?.username ?? '',
 		role: serverUser?.role ?? '',
 		avatar: serverUser?.avatar ?? '/Default_User.svg',
 		tenantId: serverUser?.tenantId ?? '', // Add tenantId
+		is2FAEnabled: serverUser?.is2FAEnabled ?? false,
 		permissions: []
 	});
 
 	// Define password as state
 	let password = $state('hash-password');
+
+	// Function to open 2FA modal
+	function open2FAModal(): void {
+		const modalComponent: ModalComponent = {
+			ref: ModalTwoFactorAuth,
+			props: { user }
+		};
+		const d: ModalSettings = {
+			type: 'component',
+			title: 'Two-Factor Authentication',
+			body: 'Add an extra layer of security to your account by requiring a verification code from your mobile device.',
+			component: modalComponent,
+			response: async (r: any) => {
+				if (r) {
+					// Refresh user data after 2FA changes
+					await invalidateAll();
+				}
+			}
+		};
+		showModal(d);
+	}
 
 	// Function to execute actions
 	function executeActions() {
@@ -84,7 +97,7 @@
 		if ($triggerActionStore.length > 0) {
 			executeActions();
 		}
-		collection.set(null);
+		setCollection(null);
 
 		// Note: Avatar initialization is handled by the layout component
 		// to ensure consistent avatar state across the application
@@ -97,32 +110,13 @@
 			slot: '<p>Edit Form</p>'
 		};
 
-		type UserFormResponse = Partial<Pick<User, 'username' | 'email' | 'role' | 'avatar'>>;
-
 		const d: ModalSettings = {
 			type: 'component',
 			title: m.usermodaluser_edittitle(),
 			body: m.usermodaluser_editbody(),
-			component: modalComponent,
-			response: async (r: UserFormResponse) => {
-				if (r) {
-					const data = { user_id: user._id, newUserData: r };
-					const res = await axios.put('/api/user/updateUserAttributes', data);
-					const t = {
-						message: '<iconify-icon icon="mdi:check-outline" color="white" width="26" class="mr-1"></iconify-icon> User Data Updated',
-						background: 'gradient-primary',
-						timeout: 3000,
-						classes: 'border-1 !rounded-md'
-					};
-					toastStore.trigger(t);
-
-					if (res.status === 200) {
-						await invalidateAll();
-					}
-				}
-			}
+			component: modalComponent
 		};
-		modalStore.trigger(d);
+		showModal(d);
 	}
 
 	// Modal Trigger - Edit Avatar
@@ -141,28 +135,21 @@
 				// Avatar is already updated by the ModalEditAvatar component
 				// No need to set avatarSrc here since the modal handles it
 				if (r) {
-					const t = {
-						message: '<iconify-icon icon="radix-icons:avatar" color="white" width="26" class="mr-1"></iconify-icon> Avatar Updated',
-						background: 'gradient-primary',
-						timeout: 3000,
-						classes: 'border-1 !rounded-md'
-					};
-					toastStore.trigger(t);
+					showToast('<iconify-icon icon="radix-icons:avatar" color="white" width="26" class="mr-1"></iconify-icon> Avatar Updated', 'success');
 					// invalidateAll is already called by the ModalEditAvatar component
 				}
 			}
 		};
-		modalStore.trigger(d);
+		showModal(d);
 	}
 
 	// Modal Confirm
 	function modalConfirm(): void {
-		const d: ModalSettings = {
-			type: 'confirm',
+		showConfirm({
 			title: m.usermodalconfirmtitle(),
 			body: m.usermodalconfirmbody(),
-			response: async (r: boolean) => {
-				if (!r) return;
+			confirmText: m.usermodalconfirmdeleteuser(),
+			onConfirm: async () => {
 				const res = await fetch(`/api/user/deleteUsers`, {
 					method: 'POST',
 					headers: { 'Content-Type': 'application/json' },
@@ -171,11 +158,8 @@
 				if (res.status === 200) {
 					await invalidateAll();
 				}
-			},
-			buttonTextCancel: m.button_cancel(),
-			buttonTextConfirm: m.usermodalconfirmdeleteuser()
-		};
-		modalStore.trigger(d);
+			}
+		});
 	}
 </script>
 
@@ -195,15 +179,31 @@
 				/>
 
 				<!-- Edit button -->
-				<button onclick={modalEditAvatar} class="gradient-primary w-30 badge absolute top-8 text-white sm:top-4">{m.userpage_editavatar()}</button>
+				<button onclick={modalEditAvatar} class="gradient-primary w-30 badge absolute -top-44 text-white sm:top-4">{m.userpage_editavatar()}</button>
 				<!-- User ID -->
 				<div class="gradient-secondary badge mt-1 w-full max-w-xs text-white">
 					{m.userpage_user_id()}<span class="ml-2">{user?._id || 'N/A'}</span>
 				</div>
 				<!-- Role -->
 				<div class="gradient-tertiary badge w-full max-w-xs text-white">
-					{m.form_role()}:<span class="ml-2">{user?.role || 'N/A'}</span>
+					{m.role()}<span class="ml-2">{user?.role || 'N/A'}</span>
 				</div>
+				<!-- Two-Factor Authentication Status -->
+				{#if is2FAEnabledGlobal}
+					<button onclick={open2FAModal} class="variant-ghost-surface btn-sm w-full max-w-xs">
+						<div class="flex w-full items-center justify-between">
+							<span>Two-Factor Auth</span>
+							<div class="flex items-center gap-1">
+								<iconify-icon
+									icon="mdi:{user?.is2FAEnabled ? 'shield-check' : 'shield-off'}"
+									width="20"
+									class={user?.is2FAEnabled ? 'text-primary-500' : 'text-error-500'}
+								></iconify-icon>
+								<span class="text-xs">{user?.is2FAEnabled ? 'Enabled' : 'Disabled'}</span>
+							</div>
+						</div>
+					</button>
+				{/if}
 				<!-- Tenant ID -->
 				{#if isMultiTenant}
 					<div class="gradient-primary badge w-full max-w-xs text-white">
@@ -222,11 +222,11 @@
 			{#if user}
 				<form>
 					<label>
-						{m.form_username()}:
+						{m.username()}:
 						<input value={user.username} name="username" type="text" autocomplete="username" disabled class="input" />
 					</label>
 					<label>
-						{m.form_email()}:
+						{m.email()}:
 						<input value={user.email} name="email" type="email" autocomplete="email" disabled class="input" />
 					</label>
 					<label>
@@ -257,18 +257,11 @@
 		</div>
 	</div>
 
-	{#if privateEnv.USE_2FA}
-		<!-- Two-Factor Authentication Section -->
-		<div class="wrapper2 mb-4">
-			<TwoFactorAuth {user} />
-		</div>
-	{/if}
-
 	<!-- Admin area -->
 	<PermissionGuard
 		config={{
 			name: 'Admin Area Access',
-			contextId: 'system:admin',
+			contextId: 'config/adminArea',
 			action: 'manage',
 			contextType: 'system',
 			description: 'Allows access to admin area for user management'
@@ -276,7 +269,7 @@
 		silent={true}
 	>
 		<div class="wrapper2">
-			<AdminArea adminData={data.adminData} currentUser={user} />
+			<AdminArea currentUser={{ ...user }} {isMultiTenant} roles={data.roles} />
 		</div>
 	</PermissionGuard>
 </div>

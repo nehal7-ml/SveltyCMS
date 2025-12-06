@@ -14,15 +14,15 @@
 
 import type { RequestHandler } from './$types';
 import { error } from '@sveltejs/kit';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Permissions
 
 // Media
-import { getFile } from '@utils/media/mediaStorage';
+import { getFile } from '@utils/media/mediaStorage.server';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 export const GET: RequestHandler = async ({ url, locals }) => {
 	const { user, tenantId } = locals;
@@ -32,7 +32,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		throw error(401, 'Unauthorized');
 	}
 
-	if (privateEnv.MULTI_TENANT && !tenantId) {
+	if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 		throw error(400, 'Tenant could not be identified for this operation.');
 	}
 
@@ -42,8 +42,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			throw error(400, 'URL parameter is required');
 		}
 
-		// Pass tenantId to ensure the file is retrieved from the correct tenant's storage
-		const buffer = await getFile(fileUrl, tenantId);
+		// Retrieve the file from storage
+		const buffer = await getFile(fileUrl);
 
 		logger.debug('Media file retrieved successfully', {
 			fileUrl,
@@ -52,7 +52,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			tenantId
 		});
 
-		return new Response(buffer, {
+		return new Response(new Uint8Array(buffer), {
 			headers: {
 				'Content-Type': 'application/octet-stream',
 				'Content-Disposition': `attachment; filename="${fileUrl.split('/').pop()}"`,

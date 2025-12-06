@@ -21,24 +21,23 @@ Usage
 		path: string[];
 	};
 
-	interface Props {
-		// Define props with proper typing
+	interface BreadcrumbProps {
 		breadcrumb: string[];
 		openFolder: (folderId: string | null) => void;
 		folders: Folder[];
 	}
 
-	let { breadcrumb, openFolder, folders }: Props = $props();
+	const { breadcrumb, openFolder, folders }: BreadcrumbProps = $props();
 
 	// Function to handle breadcrumb item click
 	function handleBreadcrumbClick(index: number) {
 		if (index === 0) {
-			// Click on home/root
+			// Click on home/root - always go to root
 			openFolder(null);
 		} else {
-			// Find the folder matching the current breadcrumb path
-			const pathUpToThisPoint = breadcrumb.slice(1, index + 1).join('/');
-			const folder = folders.find((f) => f.path.join('/') === pathUpToThisPoint);
+			// Find the folder matching the current breadcrumb
+			// Skip index 0 since that's the root
+			const folder = folders[index];
 			openFolder(folder ? folder._id : null);
 		}
 	}
@@ -46,7 +45,7 @@ Usage
 
 <nav aria-label="Breadcrumb" class="mt-1">
 	<ol class="flex items-center text-sm text-gray-700 dark:text-gray-300">
-		{#each breadcrumb as crumb, index}
+		{#each breadcrumb as crumb, index (index)}
 			<li class="flex items-center">
 				<button
 					class="btn-sm flex items-center text-xs hover:underline focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2"

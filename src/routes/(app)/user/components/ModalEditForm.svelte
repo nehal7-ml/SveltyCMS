@@ -1,5 +1,5 @@
 <!-- 
-@file src/components/ModalEditForm.svelte
+@file src/routes/(app)/user/components/ModalEditForm.svelte
 @component
 **A modal for editing user data like username, email, password, and role**
 
@@ -19,7 +19,10 @@ Efficiently manages user data updates with validation, role selection, and delet
 	import { page } from '$app/state';
 	// Skeleton & Stores
 	import type { ModalComponent } from '@skeletonlabs/skeleton';
-	import { getModalStore, getToastStore } from '@skeletonlabs/skeleton';
+	import { getModalStore } from '@skeletonlabs/skeleton';
+	import { showToast } from '@utils/toast';
+	import { Form } from '@utils/Form.svelte';
+	import { editUserSchema } from '@utils/formSchemas';
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
@@ -58,50 +61,47 @@ Efficiently manages user data updates with validation, role selection, and delet
 		role?: string | null;
 		user_id?: string | null;
 	}
-	let { parent, isGivenData = false, username = null, email = null, role = null, user_id = null }: Props = $props();
+	const { parent, isGivenData = false, username = null, email = null, role = null, user_id = null }: Props = $props();
 
 	// Store initialization
 	const modalStore = getModalStore();
-	const toastStore = getToastStore();
 
 	// Form Data Initialization
-	const formData = $state({
-		user_id: isGivenData ? user_id : user?._id,
-		username: isGivenData ? (username ?? '') : (user?.username ?? ''),
-		email: isGivenData ? (email ?? '') : (user?.email ?? ''),
-		password: '',
-		confirmPassword: '',
-		role: isGivenData ? (role ?? '') : (user?.role ?? '')
+	const editForm = new Form(
+		{
+			user_id: '',
+			username: '',
+			email: '',
+			password: '',
+			confirmPassword: '',
+			role: ''
+		},
+		editUserSchema
+	);
+
+	$effect(() => {
+		editForm.data.user_id = isGivenData ? user_id : user?._id;
+		editForm.data.username = isGivenData ? (username ?? '') : (user?.username ?? '');
+		editForm.data.email = isGivenData ? (email ?? '') : (user?.email ?? '');
+		editForm.data.role = isGivenData ? (role ?? '') : (user?.role ?? '');
 	});
 
 	let showPassword = $state(false);
-	const errorStatus = $state({
-		username: { status: false, msg: '' },
-		email: { status: false, msg: '' },
-		password: { status: false, msg: '' },
-		confirm: { status: false, msg: '' }
-	});
-	const isOwnProfile = formData.user_id === user?._id || !isGivenData;
+	const isOwnProfile = editForm.data.user_id === user?._id || !isGivenData;
 	const canChangePassword = isOwnProfile || user?.isAdmin;
 
 	// Check if user has delete permission for layout purposes
 	const hasDeletePermission = user?.isAdmin || user?.role === 'admin';
 	const showDeleteButton = hasDeletePermission && !isOwnProfile && !isFirstUser;
 
-	function onFormSubmit(event: SubmitEvent): void {
+	async function onFormSubmit(event: SubmitEvent): Promise<void> {
 		event.preventDefault();
 
-		// Validate password fields if they are filled
-		if (formData.password || formData.confirmPassword) {
-			if (formData.password !== formData.confirmPassword) {
-				errorStatus.confirm = { status: true, msg: m.formSchemas_Passwordmatch() };
-				return;
-			}
-			if (formData.password.length > 0 && formData.password.length < 8) {
-				errorStatus.password = { status: true, msg: m.formSchemas_PasswordMessage({ passwordStrength: '8' }) };
-				return;
-			}
+		if (!editForm.validate()) {
+			return;
 		}
+
+		editForm.submitting = true;
 
 		// Track what changed for smart toast messages
 		const changes: string[] = [];
@@ -112,52 +112,69 @@ Efficiently manages user data updates with validation, role selection, and delet
 		};
 
 		// Check what actually changed
-		if (formData.username !== originalData.username) {
+		if (editForm.data.username !== originalData.username) {
 			changes.push('username');
 		}
-		if (!isOwnProfile && formData.role !== originalData.role) {
+		if (!isOwnProfile && editForm.data.role !== originalData.role) {
 			const oldRole = roles?.find((r: any) => r._id === originalData.role)?.name || originalData.role;
-			const newRole = roles?.find((r: any) => r._id === formData.role)?.name || formData.role;
+			const newRole = roles?.find((r: any) => r._id === editForm.data.role)?.name || editForm.data.role;
 			changes.push(`role (${oldRole} → ${newRole})`);
 		}
-		if (formData.password && formData.password.trim() !== '') {
+		if (editForm.data.password && editForm.data.password.trim() !== '') {
 			changes.push('password');
 		}
 
-		// Create a clean data object, conditionally including password fields
+		// Create a clean data object for the API call (just the user fields)
 		const submitData: Record<string, any> = {
-			user_id: formData.user_id,
-			username: formData.username,
-			email: formData.email,
-			_changes: changes // Include changes for the response handler
+			username: editForm.data.username,
+			email: editForm.data.email
 		};
 
 		// Only include role if user is not editing their own profile
 		if (!isOwnProfile) {
-			submitData.role = formData.role;
+			submitData.role = editForm.data.role;
 		}
 
 		// Only include password fields if they're not empty
-		if (formData.password && formData.password.trim() !== '') {
-			submitData.password = formData.password;
-			submitData.confirmPassword = formData.confirmPassword;
+		if (editForm.data.password && editForm.data.password.trim() !== '') {
+			submitData.password = editForm.data.password;
 		}
 
-		// Access the current modal from the store
-		if ($modalStore[0]?.response) {
-			$modalStore[0].response(submitData);
+		try {
+			const response = await fetch('/api/user/updateUserAttributes', {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					user_id: editForm.data.user_id,
+					newUserData: submitData
+				})
+			});
+
+			const result = await response.json();
+
+			if (!response.ok) {
+				throw new Error(result.message || 'Failed to update user.');
+			}
+
+			showToast('<iconify-icon icon="mdi:check-outline" color="white" width="26" class="mr-1"></iconify-icon> User Data Updated', 'success');
+			await invalidateAll();
+			modalStore.close();
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'An unknown error occurred.';
+			showToast(`<iconify-icon icon="mdi:alert-circle" width="24"/> ${message}`, 'error');
+		} finally {
+			editForm.submitting = false;
 		}
-		modalStore.close();
 	}
 
 	async function deleteUser() {
-		if (!formData.user_id) return;
+		if (!editForm.data.user_id) return;
 		try {
 			const response = await fetch('/api/user/batch', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					userIds: [formData.user_id],
+					userIds: [editForm.data.user_id],
 					action: 'delete'
 				})
 			});
@@ -169,21 +186,13 @@ Efficiently manages user data updates with validation, role selection, and delet
 
 			// Use the success message from the API response
 			const successMessage = data.message || 'User deleted successfully.';
-			toastStore.trigger({
-				message: `<iconify-icon icon="mdi:check" width="24"/> ${successMessage}`,
-				background: 'variant-filled-success',
-				timeout: 3000
-			});
+			showToast(`<iconify-icon icon=\"mdi:check\" width=\"24\"/> ${successMessage}`, 'success');
 
 			await invalidateAll();
 			modalStore.close();
 		} catch (err) {
 			const message = err instanceof Error ? err.message : 'An unknown error occurred.';
-			toastStore.trigger({
-				message: `<iconify-icon icon="mdi:alert-circle" width="24"/> ${message}`,
-				background: 'variant-filled-error',
-				timeout: 5000
-			});
+			showToast(`<iconify-icon icon=\"mdi:alert-circle\" width=\"24\"/> ${message}`, 'error');
 		}
 	}
 
@@ -208,15 +217,16 @@ Efficiently manages user data updates with validation, role selection, and delet
 				<FloatingInput
 					type="text"
 					name="username"
-					label={m.form_username()}
-					bind:value={formData.username}
-					onkeydown={() => (errorStatus.username.status = false)}
+					label={m.username()}
+					bind:value={editForm.data.username}
+					onkeydown={() => (editForm.errors.username = [])}
 					required
 					disabled={isGivenData && user_id !== user?._id}
 					autocomplete="username"
+					textColor="text-tertiary-500 dark:text-white"
 				/>
-				{#if errorStatus.username.status}
-					<div class="absolute left-0 top-11 text-xs text-error-500">{errorStatus.username.msg}</div>
+				{#if editForm.errors.username}
+					<div class="absolute left-0 top-11 text-xs text-error-500">{editForm.errors.username[0]}</div>
 				{/if}
 			</div>
 
@@ -227,17 +237,17 @@ Efficiently manages user data updates with validation, role selection, and delet
 					type="email"
 					name="email"
 					label="Email"
-					bind:value={formData.email}
-					onkeydown={() => (errorStatus.email.status = false)}
+					bind:value={editForm.data.email}
+					onkeydown={() => (editForm.errors.email = [])}
 					required
 					disabled
 					autocomplete="email"
+					textColor="text-tertiary-500 dark:text-white"
 				/>
-				{#if errorStatus.email.status}
-					<div class="absolute left-0 top-11 text-xs text-error-500">{errorStatus.email.msg}</div>
+				{#if editForm.errors.email}
+					<div class="absolute left-0 top-11 text-xs text-error-500">{editForm.errors.email[0]}</div>
 				{/if}
 			</div>
-
 			<!-- Password Change Section -->
 			{#if canChangePassword}
 				{#if !isOwnProfile && user?.isAdmin}
@@ -259,16 +269,17 @@ Efficiently manages user data updates with validation, role selection, and delet
 						name="password"
 						id="password"
 						label={isOwnProfile ? m.modaleditform_newpassword() : 'Set New Password'}
-						bind:value={formData.password}
+						bind:value={editForm.data.password}
 						bind:showPassword
-						onkeydown={() => (errorStatus.password.status = false)}
+						onkeydown={() => (editForm.errors.password = [])}
 						autocomplete="new-password"
+						textColor="text-tertiary-500 dark:text-white"
+						passwordIconColor="text-tertiary-500 dark:text-white"
 					/>
-					{#if errorStatus.password.status}
-						<div class="absolute left-0 top-11 text-xs text-error-500">{errorStatus.password.msg}</div>
+					{#if editForm.errors.password}
+						<div class="absolute left-0 top-11 text-xs text-error-500">{editForm.errors.password[0]}</div>
 					{/if}
 				</div>
-
 				<!-- Password Confirm -->
 				<div class="group relative z-0 mb-6 w-full">
 					<iconify-icon icon="mdi:password" width="18" class="absolute left-0 top-3.5 text-gray-400"></iconify-icon>
@@ -276,33 +287,34 @@ Efficiently manages user data updates with validation, role selection, and delet
 						type="password"
 						name="confirm_password"
 						id="confirm_password"
-						label={m.form_confirmpassword()}
-						bind:value={formData.confirmPassword}
+						label={m.confirm_password?.() || m.form_confirmpassword?.()}
+						bind:value={editForm.data.confirmPassword}
 						bind:showPassword
-						onkeydown={() => (errorStatus.confirm.status = false)}
+						onkeydown={() => (editForm.errors.confirmPassword = [])}
 						autocomplete="new-password"
+						textColor="text-tertiary-500 dark:text-white"
+						passwordIconColor="text-tertiary-500 dark:text-white"
 					/>
-					{#if errorStatus.confirm.status}
-						<div class="absolute left-0 top-11 text-xs text-error-500">{errorStatus.confirm.msg}</div>
+					{#if editForm.errors.confirmPassword}
+						<div class="absolute left-0 top-11 text-xs text-error-500">{editForm.errors.confirmPassword[0]}</div>
 					{/if}
 				</div>
 			{/if}
-
 			<!-- Role Select -->
 			<PermissionGuard config={modaleEditFormConfig} silent={true}>
 				{#if !isOwnProfile}
 					<div class="flex flex-col gap-2 sm:flex-row">
-						<div class="border-b text-center sm:w-1/4 sm:border-0 sm:text-left">{m.form_userrole()}</div>
+						<div class="border-b text-center sm:w-1/4 sm:border-0 sm:text-left">{m.role()}</div>
 						<div class="flex-auto">
 							<div class="flex flex-wrap justify-center gap-2 space-x-2 sm:justify-start">
 								{#if roles && roles.length > 0}
 									{#each roles as r}
 										<button
 											type="button"
-											class="chip {formData.role === r._id ? 'variant-filled-tertiary' : 'variant-ghost-secondary'}"
-											onclick={() => (formData.role = r._id)}
+											class="chip {editForm.data.role === r._id ? 'variant-filled-tertiary' : 'variant-ghost-secondary'}"
+											onclick={() => (editForm.data.role = r._id)}
 										>
-											{#if formData.role === r._id}
+											{#if editForm.data.role === r._id}
 												<span><iconify-icon icon="fa:check"></iconify-icon></span>
 											{/if}
 											<span class="capitalize">{r.name}</span>
@@ -314,14 +326,14 @@ Efficiently manages user data updates with validation, role selection, and delet
 					</div>
 				{:else}
 					<div class="flex flex-col gap-2 sm:flex-row">
-						<div class="border-b text-center sm:w-1/4 sm:border-0 sm:text-left">{m.form_userrole()}</div>
+						<div class="border-b text-center sm:w-1/4 sm:border-0 sm:text-left">{m.role()}</div>
 						<div class="flex-auto">
 							<div class="rounded-md bg-gray-50 p-3 text-sm text-gray-600 dark:bg-gray-800 dark:text-gray-400">
 								<div class="flex items-center">
 									<iconify-icon icon="mdi:information" width="16" class="mr-2 flex-shrink-0"></iconify-icon>
 									<div>
 										<strong>Current Role:</strong>
-										{roles?.find((r: any) => r._id === formData.role)?.name || formData.role}
+										{roles?.find((r: any) => r._id === editForm.data.role)?.name || editForm.data.role}
 										<br />
 										<em>You cannot change your own role for security reasons.</em>
 									</div>

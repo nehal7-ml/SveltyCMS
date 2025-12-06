@@ -33,37 +33,48 @@ Features:
 </script>
 
 <script lang="ts">
-	import BaseWidget from '../BaseWidget.svelte';
-	import { onDestroy } from 'svelte';
-	import { Chart, PieController, ArcElement, Tooltip } from 'chart.js';
 	import type { ChartConfiguration, Plugin } from 'chart.js';
+	import { ArcElement, Chart, PieController, Tooltip } from 'chart.js';
+	import { onDestroy } from 'svelte';
+	import BaseWidget from '../BaseWidget.svelte';
+	import type { WidgetSize } from '@src/content/types';
 
 	Chart.register(PieController, ArcElement, Tooltip);
 
+	interface MemoryData {
+		memoryInfo: {
+			total: {
+				usedMemMb: number;
+				freeMemMb: number;
+				usedMemPercentage: number;
+			};
+		};
+	}
+
 	// Props passed from +page.svelte, then to BaseWidget
-	let {
+	const {
 		label = 'Memory Usage',
 		theme = 'light',
 		icon = 'mdi:memory',
 		widgetId = undefined,
-		size = { w: 1, h: 2 },
-		onSizeChange = (newSize: { w: number; h: number }) => {},
-		onCloseRequest = () => {}
-	} = $props<{
+		size = { w: 1, h: 2 } as WidgetSize,
+		onSizeChange = (_newSize: WidgetSize) => {},
+		onRemove = () => {}
+	}: {
 		label?: string;
 		theme?: 'light' | 'dark';
 		icon?: string;
 		widgetId?: string;
-		size?: { w: number; h: number };
-		onSizeChange?: (newSize: { w: number; h: number }) => void;
-		onCloseRequest?: () => void;
-	}>();
+		size?: WidgetSize;
+		onSizeChange?: (newSize: WidgetSize) => void;
+		onRemove?: () => void;
+	} = $props();
 
-	let currentData = $state<any>(undefined);
-	let chart = $state<Chart<'pie', number[], string> | undefined>(undefined);
-	let chartCanvas = $state<HTMLCanvasElement | undefined>(undefined);
+	let currentData: MemoryData | undefined = $state(undefined);
+	let chart: Chart | undefined = $state(undefined);
+	let chartCanvas: HTMLCanvasElement | undefined = $state(undefined);
 
-	function updateChartAction(canvas: HTMLCanvasElement, data: any) {
+	function updateChartAction(_canvas: HTMLCanvasElement, data: any) {
 		currentData = data;
 
 		return {
@@ -76,11 +87,13 @@ Features:
 	$effect(() => {
 		if (!chartCanvas || !currentData?.memoryInfo?.total) return;
 
-		const { usedMemMb, freeMemMb, usedMemPercentage } = currentData.memoryInfo.total;
+		// Data is already in MB from API
+		const usedMemMb = currentData.memoryInfo.total.usedMemMb || 0;
+		const freeMemMb = currentData.memoryInfo.total.freeMemMb || 0;
+		const usedPercent = currentData.memoryInfo.total.usedMemPercentage || 0;
 
 		const plainUsedMem = Number(usedMemMb) || 0;
 		const plainFreeMem = Number(freeMemMb) || 0;
-		const usedPercent = Number(usedMemPercentage) || 0;
 
 		if (chart) {
 			chart.data.datasets[0].data = [plainUsedMem, plainFreeMem];
@@ -91,7 +104,7 @@ Features:
 				existingChart.destroy();
 			}
 
-			const memoryTextCenterPlugin: Plugin<'pie'> = {
+			const memoryTextCenterPlugin: Plugin = {
 				id: 'memoryTextCenterPlugin',
 				beforeDraw(chart) {
 					const ctx = chart.ctx;
@@ -115,7 +128,7 @@ Features:
 				}
 			};
 
-			const config: ChartConfiguration<'pie', number[], string> = {
+			const config: ChartConfiguration = {
 				type: 'pie',
 				data: {
 					labels: ['Used', 'Free'],
@@ -179,7 +192,17 @@ Features:
 	});
 </script>
 
-<BaseWidget {label} {theme} endpoint="/api/dashboard/systemInfo?type=memory" pollInterval={10000} {icon} {onCloseRequest}>
+<BaseWidget
+	{label}
+	{theme}
+	endpoint="/api/dashboard/systemInfo?type=memory"
+	pollInterval={10000}
+	{icon}
+	{widgetId}
+	{size}
+	{onSizeChange}
+	onCloseRequest={onRemove}
+>
 	{#snippet children({ data: fetchedData }: { data: any | undefined })}
 		{#if fetchedData?.memoryInfo?.total}
 			{@const totalMemGB = (fetchedData.memoryInfo.total.totalMemMb || 0) / 1024}

@@ -11,13 +11,17 @@
  * - getSanitizedFileName: Sanitizes a file name to remove special characters
  */
 
-import { publicEnv } from '@root/config/public';
-import { sanitize, formatBytes } from '@utils/utils';
-import type { MediaBase } from '@utils/media/mediaModels';
+import { publicEnv } from '@src/stores/globalSettings.svelte';
+import type { MediaBase, Thumbnail } from '@utils/media/mediaModels';
+import { formatBytes, sanitize } from '@utils/utils';
 import { removeExtension } from '../utils';
 
 // System Logger
-import { logger } from '../logger.svelte';
+import { logger } from '@utils/logger';
+
+// Define types for image sizes
+type ImageSizeConfig = { width: number; height: number };
+type ImageSizes = Record<string, ImageSizeConfig>;
 
 // Browser-compatible MIME type lookup
 function getBrowserMimeType(fileName: string): string | null {
@@ -76,11 +80,25 @@ function getBrowserMimeType(fileName: string): string | null {
 }
 
 // Convert IMAGE_SIZES to an array of size configurations
-const imageSizes: Array<{ name: string; width: number; height: number }> = Object.keys(publicEnv.IMAGE_SIZES).map((key) => ({
-	name: key,
-	width: publicEnv.IMAGE_SIZES[key].width,
-	height: publicEnv.IMAGE_SIZES[key].height
-}));
+const defaultImageSizes: ImageSizes = { sm: { width: 600, height: 600 }, md: { width: 900, height: 900 }, lg: { width: 1200, height: 1200 } };
+
+// Helper function to safely get image sizes configuration
+function getImageSizesConfig(): ImageSizes {
+	const envSizes = publicEnv.IMAGE_SIZES;
+	if (envSizes && typeof envSizes === 'object' && !Array.isArray(envSizes)) {
+		return envSizes as ImageSizes;
+	}
+	return defaultImageSizes;
+}
+
+const imageSizes: Array<{ name: string; width: number; height: number }> = Object.keys(getImageSizesConfig()).map(
+	(key) =>
+		({
+			name: key,
+			width: getImageSizesConfig()[key].width,
+			height: getImageSizesConfig()[key].height
+		}) as { name: string; width: number; height: number }
+);
 
 // Media categories definition
 export const mediaCategories = {
@@ -92,7 +110,7 @@ export const mediaCategories = {
 } as const;
 
 // Constructs the full media URL based on the environment.
-export function constructMediaUrl(mediaItem: MediaBase, size?: keyof typeof publicEnv.IMAGE_SIZES): string {
+export function constructMediaUrl(mediaItem: MediaBase, size?: string): string {
 	if (!mediaItem?.url) {
 		const message = 'Media item is missing required url property';
 		try {
@@ -108,13 +126,15 @@ export function constructMediaUrl(mediaItem: MediaBase, size?: keyof typeof publ
 
 	try {
 		let url: string;
+		const mediaServerUrl = publicEnv.MEDIASERVER_URL;
+		const mediaFolder = publicEnv.MEDIA_FOLDER;
 
-		if (publicEnv.MEDIASERVER_URL) {
-			url = `${publicEnv.MEDIASERVER_URL}/${mediaItem.url}`;
+		if (mediaServerUrl) {
+			url = `${mediaServerUrl}/${mediaItem.url}`;
 		} else {
-			const basePath = `${publicEnv.MEDIA_FOLDER}/${mediaItem.url}`.replace(/\/+/g, '/');
-			if (size && 'thumbnails' in mediaItem && mediaItem.thumbnails && mediaItem.thumbnails[size]) {
-				url = mediaItem.thumbnails[size].url;
+			const basePath = `${mediaFolder}/${mediaItem.url}`.replace(/\/+/g, '/');
+			if (size && 'thumbnails' in mediaItem && mediaItem.thumbnails && (mediaItem.thumbnails as Record<string, Thumbnail>)[size]) {
+				url = (mediaItem.thumbnails as Record<string, Thumbnail>)[size].url;
 			} else {
 				url = basePath;
 			}
@@ -137,18 +157,12 @@ export function constructMediaUrl(mediaItem: MediaBase, size?: keyof typeof publ
 }
 
 // Constructs a URL for a media item based on its path, type, and other parameters.
-export function constructUrl(
-	path: string,
-	hash: string,
-	fileName: string,
-	format: string,
-	contentTypes: string,
-	size?: keyof typeof publicEnv.IMAGE_SIZES
-): string {
+export function constructUrl(path: string, hash: string, fileName: string, format: string, contentTypes: string, size?: string): string {
 	// Validate all required parameters with detailed checks
 	const missingParams = [];
 	if (!path || typeof path !== 'string') missingParams.push('path');
-	if (!hash || typeof hash !== 'string' || hash.length !== 32) missingParams.push('hash');
+	// Accept both 20-char (truncated) and 32-char (full) hashes
+	if (!hash || typeof hash !== 'string' || (hash.length !== 20 && hash.length !== 32)) missingParams.push('hash');
 	if (!fileName || typeof fileName !== 'string') missingParams.push('fileName');
 	if (!format || typeof format !== 'string') missingParams.push('format');
 	if (!contentTypes || typeof contentTypes !== 'string') missingParams.push('contentTypes');
@@ -175,7 +189,7 @@ export function constructUrl(
 	switch (path) {
 		case 'global':
 			urlPath = size
-				? `${sanitize(contentTypes)}/sizes/${size}/${sanitize(fileName)}-${hash}.${format}`
+				? `${sanitize(contentTypes)}/sizes/${sanitize(size)}/${sanitize(fileName)}-${hash}.${format}`
 				: `${sanitize(contentTypes)}/original/${sanitize(fileName)}-${hash}.${format}`;
 			// logger.debug('Constructed global path URL', { urlPath });
 			break;
@@ -188,9 +202,26 @@ export function constructUrl(
 			}
 			break;
 		default:
-			urlPath = size
-				? `${sanitize(path)}/${size}/${sanitize(fileName)}-${hash}.${format}`
-				: `${sanitize(path)}/${sanitize(fileName)}-${hash}.${format}`;
+			// Ensure path is not over-sanitized (don't remove slashes from the path variable if it contains them)
+			// But we should sanitize the other parts
+			const fileSuffix = `${sanitize(fileName)}-${hash}.${format}`;
+			if (path.endsWith(fileSuffix)) {
+				if (size) {
+					// Handle resizing logic for full path
+					// For global/original/..., we want global/sizes/size/...
+					if (path.includes('/original/')) {
+						urlPath = path.replace('/original/', `/sizes/${sanitize(size)}/`);
+					} else {
+						// Try to insert size before filename
+						const dir = path.substring(0, path.lastIndexOf('/'));
+						urlPath = `${dir}/${sanitize(size)}/${fileSuffix}`;
+					}
+				} else {
+					urlPath = path;
+				}
+			} else {
+				urlPath = size ? `${path}/${sanitize(size)}/${fileSuffix}` : `${path}/${fileSuffix}`;
+			}
 			try {
 				logger.debug('Constructed custom path URL', { urlPath });
 			} catch (logError) {
@@ -219,7 +250,7 @@ export function constructUrl(
 }
 
 // Returns the URL for accessing a media item.
-export function getMediaUrl(mediaItem: MediaBase, contentTypes: string, size?: keyof typeof publicEnv.IMAGE_SIZES): string {
+export function getMediaUrl(mediaItem: MediaBase, contentTypes: string, size?: string): string {
 	if (!mediaItem?.path || !mediaItem?.hash || !mediaItem?.filename) {
 		throw new Error('Invalid media item: Missing required properties');
 	}
@@ -240,7 +271,7 @@ export function getMediaUrl(mediaItem: MediaBase, contentTypes: string, size?: k
 }
 
 // Safe version for use in reactive contexts
-export function getMediaUrlSafe(mediaItem: MediaBase, contentTypes: string, size?: keyof typeof publicEnv.IMAGE_SIZES): string {
+export function getMediaUrlSafe(mediaItem: MediaBase, contentTypes: string, size?: string): string {
 	try {
 		if (!mediaItem?.path || !mediaItem?.hash || !mediaItem?.filename) {
 			return ''; // Return empty string instead of throwing
@@ -340,5 +371,69 @@ export function validateMediaFile(
 			isValid: false,
 			message
 		};
+	}
+}
+
+/**
+ * Validates a media file against allowed types and size limits (SERVER-SIDE)
+ * @param buffer The file buffer
+ * @param fileName The original file name
+ * @param allowedTypesPattern The regex pattern to test against
+ * @param maxSizeBytes The maximum allowed size in bytes
+ */
+export function validateMediaFileServer(
+	buffer: Buffer,
+	fileName: string,
+	allowedTypesPattern: RegExp,
+	maxSizeBytes: number = 10 * 1024 * 1024 // Default to 10MB
+): { isValid: boolean; message?: string } {
+	const startTime = performance.now();
+
+	try {
+		// 1. Get MIME type from file name (browser-compatible)
+		const fileType = getBrowserMimeType(fileName) || 'application/octet-stream';
+
+		logger.debug('Validating media file (server-side)', {
+			fileName,
+			fileSize: buffer.length,
+			fileType,
+			allowedTypesPattern: allowedTypesPattern.toString(),
+			maxSizeBytes
+		});
+
+		// 2. Check Type
+		if (!fileType || !allowedTypesPattern.test(fileType)) {
+			const message = `Invalid file type (${fileType}). Allowed pattern: ${allowedTypesPattern}`;
+			logger.warn(message, {
+				fileName,
+				fileType,
+				allowedTypesPattern: allowedTypesPattern.toString()
+			});
+			return { isValid: false, message };
+		}
+
+		// 3. Check Size
+		if (buffer.length > maxSizeBytes) {
+			const message = `File size (${formatBytes(buffer.length)}) exceeds limit of ${formatBytes(maxSizeBytes)}`;
+			logger.warn(message, {
+				fileName,
+				fileSize: buffer.length,
+				maxSizeBytes
+			});
+			return { isValid: false, message };
+		}
+
+		logger.debug('Media file validation passed (server-side)', {
+			fileName,
+			processingTime: performance.now() - startTime
+		});
+		return { isValid: true };
+	} catch (err) {
+		const message = `Error validating media file: ${err instanceof Error ? err.message : String(err)}`;
+		logger.error(message, {
+			fileName,
+			stack: new Error().stack
+		});
+		return { isValid: false, message };
 	}
 }

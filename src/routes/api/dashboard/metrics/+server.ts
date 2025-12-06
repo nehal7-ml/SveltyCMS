@@ -1,11 +1,15 @@
 /**
  * @file src/routes/api/dashboard/metrics/+server.ts
  * @description Dashboard metrics API endpoint for performance monitoring
+ * Protected by handleApiRequests middleware (requires authentication + dashboard API permissions)
  */
 
 import { json } from '@sveltejs/kit';
 import { getHealthMetrics } from '@src/hooks.server.js';
 import type { RequestHandler } from './$types';
+
+// System Logger
+import { logger } from '@utils/logger.server';
 
 export const GET: RequestHandler = async ({ url }) => {
 	try {
@@ -33,8 +37,8 @@ export const GET: RequestHandler = async ({ url }) => {
 		}
 
 		return json(metrics);
-	} catch (error) {
-		console.error('Dashboard metrics error:', error);
+	} catch (err) {
+		logger.error('Dashboard metrics error:', err);
 		return json({ error: 'Failed to fetch dashboard metrics' }, { status: 500 });
 	}
 };

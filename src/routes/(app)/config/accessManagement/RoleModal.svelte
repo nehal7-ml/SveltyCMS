@@ -41,11 +41,16 @@
 		selectedPermissions?: string[];
 	}
 
-	let { parent, isEditMode, currentRoleId, roleName, roleDescription, currentGroupName, selectedPermissions = [] }: Props = $props();
+	const { parent, isEditMode, currentRoleId, roleName, roleDescription, currentGroupName, selectedPermissions = [] }: Props = $props();
 
 	// Local form state
-	let formName = $state(roleName);
-	let formDescription = $state(roleDescription);
+	let formName = $state('');
+	let formDescription = $state('');
+
+	$effect(() => {
+		formName = roleName;
+		formDescription = roleDescription;
+	});
 
 	const modalStore = getModalStore();
 

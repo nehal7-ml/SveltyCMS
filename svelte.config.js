@@ -1,13 +1,20 @@
 import adapter from '@sveltejs/adapter-node'; // To generate a standalone Node server
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
+import { betterSvelteEmailPreprocessor } from 'better-svelte-email';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
 	// Consult https://kit.svelte.dev/docs/integrations#preprocessors
 	// for more information about preprocessors
-	preprocess: vitePreprocess(),
+	preprocess: [
+		vitePreprocess(),
+		betterSvelteEmailPreprocessor({
+			pathToEmailFolder: './src/components/emails'
+		})
+	],
 
-	// Enable runes mode across your entire SvelteKit app
+	// ✅ **ACTION REQUIRED**: Uncomment this to enable Svelte 5 runes mode!
+	// This is essential for using the latest Svelte 5 features.
 	// compilerOptions: {
 	// 	runes: true
 	// },
@@ -16,32 +23,68 @@ const config = {
 		// See https://kit.svelte.dev/docs/adapters for more information about adapters.
 		adapter: adapter({
 			out: 'build', // default: true | The directory to build the server to
-			precompress: false, // default: false | Enables precompressing using gzip & brotli for assets & prerendered pages
+			precompress: true, // ✅ Enables precompressing using gzip & brotli for assets & prerendered pages
 			envPrefix: '', // default: '' | If you need to change the name of the environment variables used to configure the deployment
 			external: ['typescript', 'ts-node', '@typescript-eslint/parser', '@typescript-eslint/eslint-plugin'], // Prevent TypeScript and related modules from being bundled into the server
 			polyfill: false // Disable polyfills as we handle them in Vite config
 		}),
-		csrf: {
-			checkOrigin: false // default: true | Protection against cross-site request forgery (CSRF) attacks.
-		},
-		files: {
-			// ... other file options
-			routes: 'src/routes' // Make sure routes are in a folder named 'routes'
-		},
+
 		alias: {
-			'@root': '.',
-			'@src': './src',
-			'@api': './src/routes/api',
-			'@components': './src/components',
-			'@collections': './config/collections',
-			'@auth': './src/auth',
-			'@databases': './src/databases',
-			'@utils': './src/utils',
-			'@stores': './src/stores',
-			'@static': './static',
 			$paraglide: './src/paraglide',
+			'@api': './src/routes/api',
+			'@auth': './src/databases/auth',
+			'@collections': './config/collections',
+			'@components': './src/components',
+			'@content': './src/content',
+			'@databases': './src/databases',
+			'@hooks': './src/hooks',
+			'@root': '.',
+			'@services': './src/services',
+			'@src': './src',
+			'@static': './static',
+			'@stores': './src/stores',
+			'@themes': './src/themes',
 			'@types': './src/types',
+			'@utils': './src/utils',
 			'@widgets': './src/widgets'
+		},
+
+		// Use SvelteKit's built-in CSP support
+		csp: {
+			mode: 'nonce', // Use nonce for inline scripts (not hash)
+			directives: {
+				'default-src': ['self'],
+				// Allow SvelteKit's nonced inline scripts plus dev HMR
+				// TEMPORARY DEBUG: Allow unsafe-eval/inline in production to rule out CSP issues
+				'script-src': ['self', 'unsafe-inline', 'unsafe-eval', 'blob:'],
+				'worker-src': ['self', 'blob:'], // Allow workers from same origin and blob URLs
+				'style-src': ['self', 'unsafe-inline'], // unsafe-inline for faster builds
+				'img-src': [
+					'self',
+					'data:',
+					'blob:',
+					'https://api.iconify.design',
+					'https://api.unisvg.com',
+					'https://api.simplesvg.com',
+					'https://placehold.co',
+					'https://api.qrserver.com',
+					'https://github.com',
+					'https://raw.githubusercontent.com'
+				],
+				'font-src': ['self', 'data:'],
+				'connect-src': [
+					'self',
+					'https://api.iconify.design',
+					'https://raw.githubusercontent.com',
+					'wss:',
+					'ws:',
+					'https://api.simplesvg.com',
+					'https://api.unisvg.com'
+				],
+				'object-src': ['none'],
+				'base-uri': ['self'],
+				'form-action': ['self']
+			}
 		}
 	},
 

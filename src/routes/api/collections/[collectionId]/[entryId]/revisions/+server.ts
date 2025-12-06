@@ -12,85 +12,71 @@
  */
 
 import { json, error, type RequestHandler } from '@sveltejs/kit';
-import { privateEnv } from '@root/config/private';
-
-// Auth
-import { contentManager } from '@src/content/ContentManager';
-
-// System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
+// Shared logic for retrieving revisions
+import { getRevisions } from '@src/services/RevisionService';
 
 // GET: Retrieves revision history for an entry
 export const GET: RequestHandler = async ({ locals, params, url }) => {
 	const start = performance.now();
 	const endpoint = `GET /api/collections/${params.collectionId}/${params.entryId}/revisions`;
-	const { user, tenantId, dbAdapter } = locals; // Destructure user, tenantId and dbAdapter
+	const { user, tenantId, dbAdapter } = locals;
 
 	if (!user) {
 		throw error(401, 'Unauthorized');
 	}
 
-	const schema = await contentManager.getCollectionById(params.collectionId, tenantId);
-	if (!schema) {
-		throw error(404, 'Collection not found');
+	if (!dbAdapter) {
+		throw error(503, 'Service Unavailable: Database service is not properly initialized');
 	}
 
 	try {
-		// --- MULTI-TENANCY SECURITY CHECK ---
-		// Verify the entry itself belongs to the current tenant before fetching its revisions.
-		if (privateEnv.MULTI_TENANT) {
-			const collectionName = `collection_${schema._id}`;
-			const entryResult = await dbAdapter.crud.findMany(collectionName, { _id: params.entryId, tenantId });
-			if (!entryResult.success || !entryResult.data || entryResult.data.length === 0) {
-				logger.warn(`Attempt to access revisions for an entry not in the current tenant.`, {
-					userId: user._id,
-					tenantId,
-					collectionId: params.collectionId,
-					entryId: params.entryId
-				});
-				throw error(404, 'Entry not found');
-			}
-		} // Get query parameters for pagination
-
 		const page = parseInt(url.searchParams.get('page') ?? '1', 10);
-		const limit = parseInt(url.searchParams.get('limit') ?? '10', 10); // Get revision history for the entry, scoped by tenant
+		const limit = parseInt(url.searchParams.get('limit') ?? '10', 10);
 
-		const revisionResult = await dbAdapter.getRevisions(params.collectionId, params.entryId);
+		const result = await getRevisions({
+			collectionId: params.collectionId,
+			entryId: params.entryId,
+			tenantId: tenantId || '',
+			dbAdapter,
+			page,
+			limit
+		});
 
-		if (!revisionResult.success) {
+		if (!result.success) {
 			logger.error(`${endpoint} - Failed to get revisions`, {
 				collectionId: params.collectionId,
 				entryId: params.entryId,
-				error: revisionResult.error.message,
+				error: result.error?.message || 'Unknown error',
 				userId: user._id
 			});
+			if (result.error?.message === 'Collection not found' || result.error?.message === 'Entry not found') {
+				throw error(404, result.error.message);
+			}
 			throw error(500, 'Failed to get revisions');
 		}
 
-		const revisions = revisionResult.data || []; // Apply pagination
-
-		const startIndex = (page - 1) * limit;
-		const paginatedRevisions = revisions.slice(startIndex, startIndex + limit);
-
+		const paginatedResult = result.data;
 		const duration = performance.now() - start;
 		logger.info(`Revisions for entry ${params.entryId} in tenant ${tenantId} retrieved in ${duration.toFixed(2)}ms`);
 
 		return json({
 			success: true,
 			data: {
-				revisions: paginatedRevisions,
-				total: revisions.length,
-				page: page,
-				limit: limit,
-				totalPages: Math.ceil(revisions.length / limit)
+				revisions: paginatedResult.items,
+				total: paginatedResult.total,
+				page: paginatedResult.page,
+				limit: paginatedResult.pageSize,
+				totalPages: paginatedResult.total ? Math.ceil(paginatedResult.total / paginatedResult.pageSize) : undefined
 			},
 			performance: { duration }
 		});
 	} catch (e) {
-		if (e.status) throw e; // Re-throw SvelteKit errors
+		if (typeof e === 'object' && e !== null && 'status' in e) throw e;
 
 		const duration = performance.now() - start;
-		logger.error(`Failed to get revisions for entry ${params.entryId}: ${e.message} in ${duration.toFixed(2)}ms`);
+		const errorMsg = e instanceof Error ? e.message : 'Unknown error';
+		logger.error(`Failed to get revisions for entry ${params.entryId}: ${errorMsg} in ${duration.toFixed(2)}ms`);
 		throw error(500, 'Internal Server Error');
 	}
 };

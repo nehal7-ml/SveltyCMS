@@ -1,109 +1,173 @@
 <!--
 @file src/routes/(app)/+layout.svelte
-@component
-**This component renders the main application layout with a persistent state for UI components.**
-## Props:
-- `theme` {string} - The theme of the website
+@component Main application layout with comprehensive state management
 
-## Features:
--     Skeleton UI framework for SvelteKit
--     Dynamic theme management based on user preferences or defaults
--     SEO optimization with Open Graph and Twitter Card metadata for enhanced social sharing
--     Initialization of Skeleton stores for UI components
--     Granular loading strategy
--     Asynchronous loading of non-critical data
+## Features
+- Type-safe props and state management
+- Centralized theme initialization and management
+- Performance-optimized loading states with granular control
+- Accessibility-compliant keyboard shortcuts
+- SEO optimization with dynamic meta tags
+- Modular component architecture
+- Memory leak prevention with proper cleanup
+- Content structure synchronization
+- Restart polling for dev/production hot-reload notifications
+- CSP-compliant nonce handling for inline scripts
+
+## Architecture
+- Separation of concerns: UI state, loading state, theme state
+- Reactive data synchronization with microtask deferral
+- Event listener lifecycle management
+- Progressive enhancement strategy
+
+## Props
+@prop {Snippet} children - Page content slot
+@prop {LayoutData} data - Server-provided data (user, contentStructure, nonce)
 -->
 
 <script lang="ts">
-	// selected theme:
+	// Selected theme:
 	import '../../app.postcss';
 
 	// Icons from https://icon-sets.iconify.design/
 	import 'iconify-icon';
 
-	import { fade } from 'svelte/transition';
+	// SvelteKit Navigation
 	import { afterNavigate, beforeNavigate } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onDestroy, onMount } from 'svelte';
-	import { publicEnv } from '@root/config/public';
 
-	// Auth
-	import type { User } from '@src/auth/types';
+	// Type Imports
+	import type { User } from '@src/databases/auth/types';
+	import type { ContentNode, Schema } from '../../content/types';
 
 	// Utils
 	import { isSearchVisible } from '@utils/globalSearchIndex';
 	import { getTextDirection } from '@utils/utils';
+	import { setGlobalModalStore } from '@utils/modalUtils';
+	import { setGlobalToastStore } from '@utils/toast';
 
 	// Stores
-	import { contentStructure } from '@stores/collectionStore.svelte';
+	import { setContentStructure, setCollection } from '@stores/collectionStore.svelte';
+	import { publicEnv } from '@stores/globalSettings.svelte';
+	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
 	import { isDesktop, screenSize } from '@stores/screenSizeStore.svelte';
 	import { avatarSrc, systemLanguage } from '@stores/store.svelte';
 	import { uiStateManager } from '@stores/UIStore.svelte';
-	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
+	import { widgetStoreActions } from '@stores/widgetStore.svelte';
+	import { initializeDarkMode } from '@stores/themeStore.svelte';
 
 	// Components
 	import HeaderEdit from '@components/HeaderEdit.svelte';
 	import LeftSidebar from '@components/LeftSidebar.svelte';
-	import Loading from '@components/Loading.svelte';
 	import PageFooter from '@components/PageFooter.svelte';
 	import RightSidebar from '@components/RightSidebar.svelte';
 	import SearchComponent from '@components/SearchComponent.svelte';
 	import FloatingNav from '@components/system/FloatingNav.svelte';
+	import ImageEditorHeader from './imageEditor/components/layout/ImageEditorHeader.svelte';
+	import ImageEditorFooter from './imageEditor/components/layout/ImageEditorFooter.svelte';
 
 	// Skeleton
-	import { Modal, setInitialClassState, setModeCurrent, setModeUserPrefers, Toast } from '@skeletonlabs/skeleton';
-	// Required for popups to function
-	import { arrow, autoUpdate, computePosition, flip, offset, shift } from '@floating-ui/dom';
-	// import type { ContentNode } from '@root/src/databases/dbInterface';
-	import { storePopup } from '@skeletonlabs/skeleton';
+	import {
+		getModalStore,
+		getToastStore,
+		Modal,
+		setInitialClassState,
+		setModeCurrent,
+		setModeUserPrefers,
+		Toast,
+		storePopup
+	} from '@skeletonlabs/skeleton';
 
+	// Floating UI for Popups
+	import { arrow, autoUpdate, computePosition, flip, offset, shift } from '@floating-ui/dom';
+
+	// Modal Components Registry
+	import ScheduleModal from '@components/collectionDisplay/ScheduleModal.svelte';
+
+	// Configure popup positioning
 	storePopup.set({ computePosition, autoUpdate, offset, shift, flip, arrow });
+
+	// Modal component registry for Skeleton UI
+	const modalComponentRegistry: Record<string, any> = {
+		scheduleModal: ScheduleModal
+	};
+
+	// =============================================
+	// TYPE DEFINITIONS
+	// =============================================
+
+	interface LayoutData {
+		user: User | null;
+		contentStructure: ContentNode[];
+		nonce: string;
+		publicSettings?: Record<string, any>;
+		theme?: string;
+		firstCollection?: Schema | null;
+	}
 
 	interface Props {
 		children?: import('svelte').Snippet;
-		data: {
-			user: User;
-			contentStructure: any[]; // Changed from ContentNode[] to any[]
-		};
+		data: LayoutData;
 	}
 
-	let { children, data }: Props = $props();
+	// =============================================
+	// PROPS & STATE
+	// =============================================
 
-	// --- State Management ---
-	globalLoadingStore.startLoading(loadingOperations.initialization); // Start initial loading immediately.
-	let loadError = $state<Error | null>(null);
-	let mediaQuery: MediaQueryList;
+	const { children, data }: Props = $props();
 
-	// A single derived value now controls the loading indicator's visibility.
-	let shouldShowLoading = $derived(globalLoadingStore.isLoading);
+	// Initialize global stores
+	setGlobalModalStore(getModalStore());
+	setGlobalToastStore(getToastStore());
 
-	// A derived value to compute the loading text cleanly.
-	let loadingTopText = $derived(() => {
-		// Use the reason from the global store to set the text.
-		switch (globalLoadingStore.loadingReason) {
-			case loadingOperations.initialization:
-				return 'Initializing';
-			case loadingOperations.navigation:
-				return 'Navigating';
-			case loadingOperations.dataFetch:
-				return 'Loading data';
-			case loadingOperations.authentication:
-				return 'Authenticating';
-			case loadingOperations.formSubmission:
-				return 'Submitting';
-			default:
-				return 'Loading'; // Fallback text.
-		}
-	});
+	// Component State
+	const loadError = $state<Error | null>(null);
+	let mediaQuery: MediaQueryList | undefined;
 
-	// Set isCollectionsLoaded to true once the initial data is available.
+	// =============================================
+	// DERIVED STATE
+	// =============================================
+
+	// SEO meta content
+	const siteName = publicEnv?.SITE_NAME || 'SveltyCMS';
+	const seoDescription = `${siteName} - a modern, powerful, and easy-to-use CMS powered by SvelteKit. Manage your content with ease & take advantage of the latest web technologies.`;
+	// Hide CMS layout footer when using Image Editor route (it has its own footer toolbar)
+	const isImageEditorRoute = $derived(page.url?.pathname?.includes('/imageEditor'));
+
+	// =============================================
+	// REACTIVE EFFECTS
+	// =============================================
+
+	// Effect: Stop initialization loader once content structure is received
 	$effect(() => {
-		if (data.contentStructure && data.contentStructure.length > 0) {
+		if (Array.isArray(data.contentStructure)) {
 			globalLoadingStore.stopLoading(loadingOperations.initialization);
 		}
 	});
 
-	// Handle system language changes
+	// Effect: Synchronize content structure with store
+	$effect(() => {
+		// Defer store updates to next microtask to prevent UpdatedAtError
+		const defer = (fn: () => void): void => {
+			if (typeof queueMicrotask === 'function') {
+				queueMicrotask(fn);
+			} else {
+				Promise.resolve().then(fn);
+			}
+		};
+
+		if (Array.isArray(data.contentStructure)) {
+			defer(() => setContentStructure(data.contentStructure));
+		}
+
+		// Hydrate first collection if available and no collection is currently set
+		if (data.firstCollection !== undefined) {
+			defer(() => setCollection(data.firstCollection ?? null));
+		}
+	});
+
+	// Effect: Handle system language changes
 	$effect(() => {
 		const lang = systemLanguage.value;
 		if (!lang) return;
@@ -115,61 +179,87 @@
 		document.documentElement.lang = lang;
 	});
 
-	// Function to initialize collections using ContentManager
-	async function initializeCollections() {
-		try {
-			//console.log('contentStructure', data.contentStructure);
-			contentStructure.set(data.contentStructure);
-		} catch (error) {
-			console.error('Error loading collections:', error);
-			loadError = error instanceof Error ? error : new Error('Unknown error occurred while loading collections');
-		}
-	}
+	// =============================================
+	// EVENT HANDLERS
+	// =============================================
 
-	// Theme management
-	function updateThemeBasedOnSystemPreference(event: MediaQueryListEvent) {
-		const prefersDarkMode = event.matches;
-		setModeUserPrefers(prefersDarkMode);
-		setModeCurrent(prefersDarkMode);
-		localStorage.setItem('theme', prefersDarkMode ? 'dark' : 'light');
-	}
+	/**
+	 * Updates theme based on OS preference changes
+	 * Only applies if user hasn't set an explicit preference
+	 */
+	function handleSystemThemeChange(event: MediaQueryListEvent): void {
+		// Only update if user hasn't set an explicit preference
+		const userHasPreference = document.cookie.includes('theme=');
 
-	// Keyboard shortcuts
-	function onKeyDown(event: KeyboardEvent) {
-		if (event.altKey && event.key === 's') {
-			event.preventDefault();
-			isSearchVisible.update((v) => !v);
-		}
-	}
+		if (!userHasPreference) {
+			const prefersDarkMode = event.matches;
+			setModeUserPrefers(prefersDarkMode);
+			setModeCurrent(prefersDarkMode);
 
-	onMount(() => {
-		// Theme initialization
-		mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-		mediaQuery.addEventListener('change', updateThemeBasedOnSystemPreference);
-
-		// Check for saved theme preference in localStorage
-		const savedTheme = localStorage.getItem('theme');
-		if (savedTheme) {
-			const newMode = savedTheme === 'light';
-			setModeUserPrefers(newMode);
-			setModeCurrent(newMode);
-		}
-
-		if (data.user) {
-			// Initialize avatar with user's avatar URL from database, fallback to default
-			if (data.user.avatar && data.user.avatar !== '/Default_User.svg') {
-				avatarSrc.value = data.user.avatar;
+			// Immediately apply theme to DOM
+			if (prefersDarkMode) {
+				document.documentElement.classList.add('dark');
 			} else {
-				avatarSrc.value = '/Default_User.svg';
-				// console.log('Layout: Avatar set to default, user avatar was:', data.user.avatar);
+				document.documentElement.classList.remove('dark');
 			}
 		}
+	}
 
-		// Event listeners
-		window.addEventListener('keydown', onKeyDown);
+	// Global keyboard shortcuts handler
+	function handleKeyDown(event: KeyboardEvent): void {
+		// Alt+S: Toggle search
+		if (event.altKey && event.key === 's') {
+			event.preventDefault();
+			isSearchVisible.update((visible) => !visible);
+		}
+	}
 
-		// Initialize data
-		initializeCollections();
+	// Initialize avatar from user data
+	function initializeUserAvatar(user: User | null): void {
+		if (!user) {
+			avatarSrc.value = '/Default_User.svg';
+			return;
+		}
+
+		if (user.avatar && user.avatar !== '/Default_User.svg') {
+			avatarSrc.value = user.avatar;
+		} else {
+			avatarSrc.value = '/Default_User.svg';
+		}
+	}
+
+	// =============================================
+	// LIFECYCLE HOOKS
+	// =============================================
+
+	onMount(() => {
+		console.log('[AppLayout] Mounting...');
+		console.log('[AppLayout] Content Structure:', data.contentStructure);
+
+		// Start initialization loading ONLY if content structure is missing
+		// This prevents a race condition where onMount (running after effect) restarts loading
+		if (!Array.isArray(data.contentStructure)) {
+			console.warn('[AppLayout] Content structure missing, starting loader...');
+			globalLoadingStore.startLoading(loadingOperations.initialization);
+		} else {
+			console.log('[AppLayout] Content structure present, skipping loader.');
+		}
+
+		// Initialize widgets
+		widgetStoreActions.initializeWidgets();
+
+		// Initialize theme from cookie/system preference
+		initializeDarkMode();
+
+		// Set up system theme preference listener
+		mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+		mediaQuery.addEventListener('change', handleSystemThemeChange);
+
+		// Initialize user avatar
+		initializeUserAvatar(data.user);
+
+		// Register global keyboard shortcuts
+		window.addEventListener('keydown', handleKeyDown);
 	});
 
 	// Navigation loading handlers
@@ -184,7 +274,7 @@
 		// Stop navigation loading
 		globalLoadingStore.stopLoading(loadingOperations.navigation);
 
-		// Clear any stale loading operations after navigation
+		// Clear stale loading operations after navigation
 		setTimeout(() => {
 			// Only clear if no other operations are running
 			if (globalLoadingStore.loadingStack.size === 1 && globalLoadingStore.isLoadingReason(loadingOperations.navigation)) {
@@ -195,123 +285,138 @@
 
 	onDestroy(() => {
 		// Cleanup: remove event listeners
-		mediaQuery?.removeEventListener('change', updateThemeBasedOnSystemPreference);
-		window.removeEventListener('keydown', onKeyDown);
+		mediaQuery?.removeEventListener('change', handleSystemThemeChange);
+		window.removeEventListener('keydown', handleKeyDown);
 	});
-
-	// SEO
-	const SeoTitle = `${publicEnv.SITE_NAME} - powered with sveltekit`;
-	const SeoDescription = `${publicEnv.SITE_NAME} - a modern, powerful, and easy-to-use CMS powered by SvelteKit. Manage your content with ease & take advantage of the latest web technologies.`;
 </script>
 
-<svelte:head>
-	<!-- Dark Mode -->
-	<!-- eslint-disable-next-line svelte/no-at-html-tags-->
-	{@html '<script>(' + setInitialClassState.toString() + ')();</script>'}
+<!-- HEAD: SEO & THEME INITIALIZATION -->
 
-	<!--Basic SEO-->
-	<title>{SeoTitle}</title>
-	<meta name="description" content={SeoDescription} />
+<svelte:head>
+	<!-- Dark Mode Initialization (CSP-compliant with nonce) -->
+	<!-- eslint-disable-next-line svelte/no-at-html-tags -->
+	{@html '<script nonce="' + (data?.nonce || '') + '">(' + setInitialClassState.toString() + ')();</script>'}
+
+	<!-- Basic SEO -->
+	<meta name="description" content={seoDescription} />
 
 	<!-- Open Graph -->
-	<meta property="og:title" content={SeoTitle} />
-	<meta property="og:description" content={SeoDescription} />
+	<meta property="og:title" content={siteName} />
+	<meta property="og:description" content={seoDescription} />
 	<meta property="og:type" content="website" />
 	<meta property="og:image" content="/SveltyCMS.png" />
 	<meta property="og:image:width" content="1200" />
 	<meta property="og:image:height" content="630" />
 	<meta property="og:site_name" content={page.url.origin} />
 
-	<!-- Open Graph : Twitter-->
+	<!-- Twitter Card -->
 	<meta name="twitter:card" content="summary_large_image" />
-	<meta name="twitter:title" content={SeoTitle} />
-	<meta name="twitter:description" content={SeoDescription} />
+	<meta name="twitter:title" content={siteName} />
+	<meta name="twitter:description" content={seoDescription} />
 	<meta name="twitter:image" content="/SveltyCMS.png" />
 	<meta property="twitter:domain" content={page.url.origin} />
 	<meta property="twitter:url" content={page.url.href} />
 </svelte:head>
 
+<!-- MAIN LAYOUT -->
+
 {#if loadError}
-	<div class="text-error-500">An error occurred: {loadError.message}</div>
+	<!-- Error State -->
+	<div class="flex h-screen w-screen items-center justify-center bg-error-50 dark:bg-error-900">
+		<div class="text-center">
+			<h1 class="text-2xl font-bold text-error-600 dark:text-error-300">Application Error</h1>
+			<p class="mt-2 text-error-500 dark:text-error-400">{loadError.message}</p>
+		</div>
+	</div>
 {:else}
-	<!-- This outer div is a good container for overlays -->
+	<!-- Application Container -->
 	<div class="relative h-lvh w-full">
-		<!-- Background and Overlay components live here, outside the main content flow -->
+		<!-- Overlays: Mobile Nav, Toasts, Modals, Search -->
 		{#if screenSize.value === 'XS' || screenSize.value === 'SM'}
 			<FloatingNav />
 		{/if}
+
 		<Toast />
-		<Modal />
+		<Modal components={modalComponentRegistry} />
+
 		{#if $isSearchVisible}
 			<SearchComponent />
 		{/if}
 
-		<!-- Body -->
+		<!-- Main Layout Structure -->
 		<div class="flex h-lvh flex-col overflow-hidden">
-			<!-- Header (unused) -->
+			<!-- Header (Optional) -->
 			{#if uiStateManager.uiState.value.header !== 'hidden'}
-				<header class="sticky top-0 z-10 bg-tertiary-500">Header</header>
+				<header class="sticky top-0 z-10 bg-tertiary-500">
+					<!-- Header content goes here -->
+				</header>
 			{/if}
 
+			<!-- Body: Sidebars + Main Content -->
 			<div class="flex flex-1 overflow-hidden">
-				<!-- Sidebar Left -->
+				<!-- Left Sidebar -->
 				{#if uiStateManager.uiState.value.leftSidebar !== 'hidden'}
 					<aside
 						class="max-h-dvh {uiStateManager.uiState.value.leftSidebar === 'full'
 							? 'w-[220px]'
 							: 'w-fit'} relative border-r bg-white !px-2 text-center dark:border-surface-500 dark:bg-gradient-to-r dark:from-surface-700 dark:to-surface-900"
+						aria-label="Left sidebar navigation"
 					>
 						<LeftSidebar />
 					</aside>
 				{/if}
 
-				<!-- Content Area -->
+				<!-- Main Content Area -->
 				<main class="relative z-0 flex w-full min-w-0 flex-1 flex-col">
 					<!-- Page Header -->
 					{#if uiStateManager.uiState.value.pageheader !== 'hidden'}
-						<header class="sticky top-0 w-full"><HeaderEdit /></header>
+						<header class="sticky top-0 z-20 w-full">
+							{#if isImageEditorRoute}
+								<ImageEditorHeader />
+							{:else}
+								<HeaderEdit />
+							{/if}
+						</header>
 					{/if}
 
-					<!-- Router Slot & Scoped Loader -->
+					<!-- Router Slot -->
 					<div
-						role="main"
-						class="relative flex-1 {uiStateManager.uiState.value.leftSidebar === 'full' ? 'mx-2' : 'mx-1'} {$screenSize === 'LG' ? 'mb-2' : 'mb-16'}"
+						class="relative flex-1 overflow-visible {uiStateManager.uiState.value.leftSidebar === 'full' ? 'mx-2' : 'mx-1'} {isDesktop.value
+							? 'mb-2'
+							: 'mb-16'}"
 					>
-						<!-- The loading component  -->
-						{#if shouldShowLoading}
-							<div transition:fade={{ duration: 200 }} class="variant-glass-surface absolute z-50 flex h-full w-full items-center justify-center">
-								<Loading
-									customTopText={loadingTopText()}
-									customBottomText={globalLoadingStore.loadingReason === loadingOperations.initialization ? 'Loading application...' : 'Please wait'}
-								/>
-							</div>
-						{/if}
-
-						<!-- The page content is rendered here. -->
+						<!-- Page Content Slot -->
 						{@render children?.()}
 					</div>
 
-					<!-- Page Footer (Mobile Nav) -->
+					<!-- Page Footer / Mobile Nav -->
 					{#if uiStateManager.uiState.value.pagefooter !== 'hidden'}
 						<footer class="mt-auto w-full bg-surface-50 bg-gradient-to-b px-1 text-center dark:from-surface-700 dark:to-surface-900">
-							<PageFooter />
+							{#if isImageEditorRoute}
+								<ImageEditorFooter />
+							{:else}
+								<PageFooter />
+							{/if}
 						</footer>
 					{/if}
 				</main>
 
-				<!-- Sidebar Right -->
+				<!-- Right Sidebar -->
 				{#if uiStateManager.uiState.value.rightSidebar !== 'hidden'}
 					<aside
-						class="max-h-dvh w-[220px] border-l bg-surface-50 bg-gradient-to-r dark:border-surface-500 dark:from-surface-700 dark:to-surface-900"
+						class="max-h-dvh w-[220px] border-l bg-white bg-gradient-to-r dark:border-surface-500 dark:from-surface-700 dark:to-surface-900"
+						aria-label="Right sidebar"
 					>
 						<RightSidebar />
 					</aside>
 				{/if}
 			</div>
 
-			<!-- Footer (unused) -->
+			<!-- Footer (Optional) -->
 			{#if uiStateManager.uiState.value.footer !== 'hidden'}
-				<footer class="bg-blue-500">Footer</footer>
+				<footer class="bg-blue-500">
+					<!-- Footer content goes here -->
+				</footer>
 			{/if}
 		</div>
 	</div>

@@ -6,10 +6,18 @@
 @example
 <TableIcons checked={true} />
 
-@props
+### Props
 - `checked` {boolean}: The checked state of the icon
 - `iconStatus` {string}: The status of the icon
 - `onCheck` {(checked: boolean) => void}: Callback function for check event
+- `cellClass` {string}: Optional classes applied to the root `<td>`
+
+### Features
+- Provides a visual representation of the icon's checked state
+- Supports different icon styles based on status
+- Integrates with table row selection and actions
+- Optimized for performance with minimal re-renders
+- Accessible with keyboard navigation and screen readers
 -->
 
 <script lang="ts">
@@ -20,17 +28,7 @@
 	import { storeListboxValue } from '@stores/store.svelte';
 
 	// Props
-	let {
-		checked = false,
-		iconStatus,
-		onCheck = () => {},
-		cellClass = ''
-	} = $props<{
-		checked?: boolean;
-		iconStatus?: string;
-		onCheck?: (isChecked: boolean) => void;
-		cellClass?: string; // optional classes applied to the root <td>
-	}>();
+	let { checked = false, iconStatus = undefined, onCheck = () => {}, cellClass = '' } = $props(); // optional classes applied to the root <td>
 
 	// Function to handle icon click and emit custom events
 	function handleIconClick(event: Event) {
@@ -47,7 +45,7 @@
 	}
 </script>
 
-<td onclick={handleIconClick} class={`p-0 text-center align-middle ${cellClass}`}>
+<td onclick={handleIconClick} class={`border-r p-0 text-center align-middle ${cellClass}`}>
 	<button
 		onkeydown={handleKeydown}
 		onclick={handleIconClick}

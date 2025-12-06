@@ -8,16 +8,15 @@
  * - **Input Validation:** Safely validates and caps the `limit` query parameter.
  */
 
+import { error, json } from '@sveltejs/kit';
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import type { RequestHandler } from './$types';
-import { error, json } from '@sveltejs/kit';
-
-// Auth
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
+import type { ISODateString } from '@src/content/types';
 
 // Validation
 import * as v from 'valibot';
@@ -28,7 +27,7 @@ type SystemMessage = {
 	title: string;
 	message: string;
 	level: string;
-	timestamp: string;
+	timestamp: ISODateString;
 	type: 'error' | 'warning' | 'info';
 };
 
@@ -100,7 +99,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 					title: `${level.toUpperCase()} Message`,
 					message: message.substring(0, 100) + (message.length > 100 ? '...' : ''),
 					level: lowerLevel,
-					timestamp,
+					timestamp: timestamp as ISODateString,
 					type: lowerLevel === 'error' ? 'error' : lowerLevel === 'warn' ? 'warning' : 'info'
 				};
 			})
@@ -112,7 +111,7 @@ export const GET: RequestHandler = async ({ locals, url }) => {
 				title: 'System Status',
 				message: 'System is running normally. No recent critical messages.',
 				level: 'info',
-				timestamp: new Date().toISOString(),
+				timestamp: new Date().toISOString() as ISODateString,
 				type: 'info'
 			});
 		}

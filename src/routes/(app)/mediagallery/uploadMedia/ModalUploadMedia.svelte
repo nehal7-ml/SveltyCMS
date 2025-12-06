@@ -22,10 +22,13 @@
 <script lang="ts">
 	// Skeleton
 	import { getModalStore } from '@skeletonlabs/skeleton';
+	import { logger } from '@utils/logger';
+	import { untrack } from 'svelte';
 	const modalStore = getModalStore();
 
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
+	import { showToast } from '@utils/toast';
 
 	interface Props {
 		parent: {
@@ -35,69 +38,70 @@
 			[key: string]: unknown;
 		};
 		sectionName: string;
-		files?: File[]; // This holds all files, both initially provided and newly added
+		files?: File[]; // Initial files from parent
 		onDelete: (file: File) => void;
 		uploadFiles: (files: File[]) => Promise<void>;
 	}
 
-	let { parent, sectionName, files = $bindable([]), onDelete, uploadFiles }: Props = $props();
+	const { parent, sectionName, files: initialFiles = [], onDelete, uploadFiles }: Props = $props();
 
-	let fileSet = $state(new Set<string>()); // To track unique files by name and size
+	// Use internal state to prevent $bindable loop
+	let files = $state<File[]>([]);
+	let fileSet = $state(new Set<string>()); // Initialize with initial files
 	let duplicateWarning = $state('');
 	let objectUrls = $state<Map<string, string>>(new Map()); // Map fileKey to ObjectURL
 
-	// Effect to manage object URLs based on the files array
 	$effect(() => {
-		const currentFiles = files; // Read dependency
-		const currentFileKeys = new Set(currentFiles.map((f) => `${f.name}-${f.size}`));
-		const newObjectUrls = new Map<string, string>();
-		const previousObjectUrls = objectUrls; // Capture previous state for cleanup comparison
+		// Sync with initialFiles if they change (e.g. parent updates)
+		// Note: This might overwrite user additions if initialFiles changes dynamically,
+		// but usually it's static for modal lifetime.
+		if (initialFiles.length > 0 && files.length === 0) {
+			files = [...initialFiles];
+			fileSet = new Set(initialFiles.map((f) => `${f.name}-${f.size}`));
+		}
+	});
 
-		// Create/update URLs for current files
+	// Effect to manage object URLs based on the files array
+	// This is FAST - ObjectURL creation takes <1ms per file
+	$effect(() => {
+		const currentFiles = files;
+		const newObjectUrls = new Map<string, string>();
+
+		// Use untrack to read objectUrls without creating a dependency on it
+		const previousObjectUrls = untrack(() => new Map(objectUrls));
+
+		// Create URLs for all current files
 		for (const file of currentFiles) {
 			const fileKey = `${file.name}-${file.size}`;
+			// Only create ObjectURLs for files that can be previewed
 			if (file.type?.startsWith('image/') || file.type?.startsWith('audio/')) {
 				if (previousObjectUrls.has(fileKey)) {
-					// Reuse existing URL if file is still present
+					// Reuse existing URL if file hasn't changed
 					newObjectUrls.set(fileKey, previousObjectUrls.get(fileKey)!);
 				} else {
-					// Create new URL for new files
-					try {
-						const url = URL.createObjectURL(file);
-						newObjectUrls.set(fileKey, url);
-					} catch (e) {
-						console.error(`Error creating ObjectURL for ${file.name}:`, e);
-						// Optionally handle the error, e.g., set a placeholder URL or skip
-					}
+					// Create new URL - this is synchronous and instant
+					const url = URL.createObjectURL(file);
+					newObjectUrls.set(fileKey, url);
 				}
 			}
 		}
 
-		// Update the state
+		// Revoke URLs for removed files
+		previousObjectUrls.forEach((url, key) => {
+			if (!newObjectUrls.has(key)) {
+				URL.revokeObjectURL(url);
+			}
+		});
+
+		// Update state
 		objectUrls = newObjectUrls;
-
-		// Cleanup function: Revoke URLs for files that are no longer present
-		return () => {
-			const urlsInCurrentState = new Set(newObjectUrls.values());
-			previousObjectUrls.forEach((url, key) => {
-				// Revoke URL if the file key is gone OR if the URL itself is not in the new map (e.g., error during creation)
-				if (!currentFileKeys.has(key) || !urlsInCurrentState.has(url)) {
-					console.log(`Revoking URL for removed/changed file: ${key}`);
-					URL.revokeObjectURL(url);
-				}
-			});
-		};
-	});
-
-	// Effect for final cleanup on component unmount
+	}); // Effect for final cleanup on component unmount
 	$effect(() => {
 		// This effect runs once on mount and its cleanup runs once on unmount
 		return () => {
-			console.log('Component unmounting, revoking all object URLs');
 			// Make sure to access the latest state of objectUrls inside the cleanup
 			const urlsToRevoke = objectUrls;
-			urlsToRevoke.forEach((url, key) => {
-				console.log(`Revoking URL on unmount: ${key}`);
+			urlsToRevoke.forEach((url) => {
 				URL.revokeObjectURL(url);
 			});
 		};
@@ -179,7 +183,7 @@
 					if (!duplicateWarning) {
 						duplicateWarning = `File "${file.name}" already exists and was skipped.`;
 					}
-					console.warn(`Duplicate file skipped: ${file.name}`);
+					logger.warn(`Duplicate file skipped: ${file.name}`);
 				} else {
 					addedFiles.push(file);
 					fileSet.add(fileKey); // Add to set immediately
@@ -199,8 +203,7 @@
 	// Function to handle the Cancel button click
 	function handleCancel() {
 		// Explicitly revoke URLs and clear the map for immediate UI update
-		objectUrls.forEach((url, key) => {
-			console.log(`Revoking URL on cancel: ${key}`);
+		objectUrls.forEach((url) => {
 			URL.revokeObjectURL(url);
 		});
 		objectUrls = new Map(); // Clear the state map
@@ -215,7 +218,7 @@
 		// Prevent submission if there are no files
 		if (files.length === 0) {
 			// Optionally show a message to the user
-			console.warn('No files selected for upload.');
+			showToast('No files selected for upload.', 'warning');
 			// You might want to set a warning message state here instead of just logging
 			duplicateWarning = 'No files selected for upload.'; // Reuse existing warning state for simplicity
 			return; // Stop the submission
@@ -228,10 +231,11 @@
 			// Clear files and close the modal ONLY on successful upload
 			handleCancel();
 		} catch (error) {
-			console.error('Error uploading files:', error);
+			logger.error('Error uploading files:', error);
 			// Keep the modal open and display an error message
 			// You might want a dedicated error state instead of reusing duplicateWarning
 			duplicateWarning = `Upload failed: ${error instanceof Error ? error.message : String(error)}`;
+			showToast(duplicateWarning, 'error');
 		}
 	};
 

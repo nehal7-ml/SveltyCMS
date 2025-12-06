@@ -17,15 +17,16 @@
  * - Allows querying of user data through the GraphQL API
  */
 
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
+import type { ISODateString, BaseEntity } from '@src/databases/dbInterface';
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Permissions
 
 // Types
 import type { DatabaseAdapter } from '@src/databases/dbInterface';
-import type { User } from '@src/auth/types';
+import type { User } from '@src/databases/auth/types';
 
 // GraphQL types
 type GraphQLValue = string | number | boolean | Date | object | GraphQLValue[];
@@ -72,21 +73,21 @@ const userTypeSample: Partial<User> = {
 	username: '',
 	avatar: '',
 	lastAuthMethod: '',
-	lastActiveAt: new Date(),
-	expiresAt: new Date(),
+	lastActiveAt: new Date().toISOString() as ISODateString,
+	expiresAt: new Date().toISOString() as ISODateString,
 	isRegistered: false,
 	blocked: false,
-	resetRequestedAt: new Date(),
+	resetRequestedAt: new Date().toISOString() as ISODateString,
 	resetToken: '',
 	failedAttempts: 0,
-	lockoutUntil: new Date(),
+	lockoutUntil: new Date().toISOString() as ISODateString,
 	is2FAEnabled: false,
 	permissions: []
 };
 
 // TypeDefs
 export function userTypeDefs() {
-	return generateGraphQLTypeDefsFromType(userTypeSample, 'User');
+	return generateGraphQLTypeDefsFromType(userTypeSample as Record<string, GraphQLValue>, 'User');
 }
 
 // GraphQL context type
@@ -95,20 +96,25 @@ interface GraphQLContext {
 	tenantId?: string;
 }
 
+// User entity type with tenantId support for query building
+interface UserEntity extends BaseEntity {
+	email?: string;
+	tenantId?: string;
+}
+
 // Resolvers with pagination support
 export function userResolvers(dbAdapter: DatabaseAdapter) {
+	if (!dbAdapter) {
+		logger.error('Database adapter is not initialized');
+		throw new Error('Database adapter is not initialized');
+	}
 	const fetchWithPagination = async (contentTypes: string, pagination: { page: number; limit: number }, context: GraphQLContext) => {
 		// Authentication is handled by hooks.server.ts
 		if (!context.user) {
 			throw new Error('Authentication required');
 		}
 
-		if (!dbAdapter) {
-			logger.error('Database adapter is not initialized');
-			throw Error('Database adapter is not initialized');
-		}
-
-		if (privateEnv.MULTI_TENANT && !context.tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !context.tenantId) {
 			logger.error('GraphQL: Tenant ID is missing from context in a multi-tenant setup.');
 			throw new Error('Internal Server Error: Tenant context is missing.');
 		}
@@ -117,16 +123,18 @@ export function userResolvers(dbAdapter: DatabaseAdapter) {
 
 		try {
 			// --- MULTI-TENANCY: Scope the query by tenantId ---
-			const query: { tenantId?: string } = {};
-			if (privateEnv.MULTI_TENANT) {
+			const query: Partial<UserEntity> = {};
+			if (getPrivateSettingSync('MULTI_TENANT')) {
 				query.tenantId = context.tenantId;
 			}
 
 			// Use query builder pattern consistent with REST API
-			const queryBuilder = dbAdapter.queryBuilder(contentTypes).where(query).sort('lastActiveAt', 'desc').paginate({ page, pageSize: limit });
-
+			const queryBuilder = dbAdapter
+				.queryBuilder<UserEntity>(contentTypes)
+				.where(query)
+				.sort('updatedAt', 'desc')
+				.paginate({ page, pageSize: limit });
 			const result = await queryBuilder.execute();
-
 			if (!result.success) {
 				throw new Error(`Database query failed: ${result.error?.message || 'Unknown error'}`);
 			}
@@ -141,6 +149,12 @@ export function userResolvers(dbAdapter: DatabaseAdapter) {
 
 	return {
 		users: async (_: unknown, args: { pagination: { page: number; limit: number } }, context: GraphQLContext) =>
-			await fetchWithPagination('auth_users', args.pagination, context)
+			await fetchWithPagination('auth_users', args.pagination, context),
+		me: async (_: unknown, __: unknown, context: GraphQLContext) => {
+			if (!context.user) {
+				throw new Error('Authentication required');
+			}
+			return context.user;
+		}
 	};
 }

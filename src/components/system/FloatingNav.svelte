@@ -9,134 +9,228 @@ with quick access to main sections: Home, User, Collections, Config, etc.
 @example
 <FloatingNav />
 
-@features
-- Draggable floating action button
-- Radial menu expansion with smooth animations
-- SvelteKit navigation integration
-- Position persistence via localStorage
-- Role-based endpoint filtering
-- Touch-optimized for mobile devices
+### Features
+- Draggable floating button
+- Radial menu for quick access to main sections
 -->
 
 <script lang="ts">
-	import { goto } from '$app/navigation';
+	import { logger } from '@utils/logger';
+	import { page } from '$app/state';
 	import { motion } from '@src/utils/utils';
-
-	import { fade } from 'svelte/transition';
+	import { onDestroy, onMount, tick } from 'svelte';
 	import { linear } from 'svelte/easing';
-	import { tick, onMount, onDestroy } from 'svelte';
+	import { fade } from 'svelte/transition';
+	import { browser } from '$app/environment';
 
 	// Auth
-	import type { User } from '@src/auth/types';
+	import type { User } from '@src/databases/auth/types';
 
 	// Stores
-	import { page } from '$app/stores';
-	import { mode } from '@stores/collectionStore.svelte';
+	import { setMode } from '@stores/collectionStore.svelte';
 	import { toggleUIElement } from '@stores/UIStore.svelte';
 
-	// Skeleton
-	import { getModalStore } from '@skeletonlabs/skeleton';
+	// Skeleton UI
+	import { getModalStore, popup } from '@skeletonlabs/skeleton';
+
 	const modalStore = getModalStore();
 
-	// Config / UX constants
-	const buttonRadius = 25; // home button size
-	const EDGE_MARGIN = 12; // px gap from screen edges for the FAB
-	let navigation_info: Record<string, any> = {};
-	let showRoutes = false;
-	// radial menu center (set on mount and when opening)
-	let center = { x: 0, y: 0 };
+	// Constants
+	const BUTTON_RADIUS = 25;
+	const EDGE_MARGIN = 12;
+	const MENU_RADIUS = 160;
+	const DRAG_THRESHOLD = 10;
+	const MOTION_MS_DEFAULT = 200;
+	const VIBRATE_OPEN_MS = 10;
+	const VIBRATE_CLOSE_MS = 5;
 
-	// Refs
-	let firstLine: SVGLineElement;
-	let firstCircle: HTMLDivElement;
-	const circles: HTMLDivElement[] = [];
-	let svg: SVGElement;
-	let user: User = $page.data.user;
-
-	// Motion preferences
-	let prefersReducedMotion = false;
-	let MOTION_MS = 200;
-
-	// Endpoint definition with URL and icon only
-	let endpoints: {
+	// Endpoint type
+	type Endpoint = {
+		tooltip: string;
 		url: {
 			external: boolean;
 			path: string;
 		};
 		icon: string;
 		color?: string;
-	}[] = [
+	};
+
+	// Get user from page data
+	const user = $derived(page.data.user as User | undefined);
+
+	// Endpoint definitions
+	const ALL_ENDPOINTS: Endpoint[] = [
 		{
-			// Home
-			url: { external: false, path: `/` },
+			tooltip: 'Home',
+			url: { external: false, path: '/' },
 			icon: 'solar:home-bold'
 		},
 		{
-			// User
-			url: { external: false, path: `/user` },
+			tooltip: 'Dashboard',
+			url: { external: false, path: '/dashboard' },
+			icon: 'mdi:view-dashboard',
+			color: 'bg-blue-500'
+		},
+		{
+			tooltip: 'User Profile',
+			url: { external: false, path: '/user' },
 			icon: 'radix-icons:avatar',
 			color: 'bg-orange-500'
 		},
 		{
-			// Collection builder
-			url: { external: false, path: `/config/collectionbuilder` },
+			tooltip: 'Collection Builder',
+			url: { external: false, path: '/config/collectionbuilder' },
 			icon: 'fluent-mdl2:build-definition',
 			color: 'bg-green-500'
 		},
 		{
-			// Image Editor
-			url: { external: false, path: `/imageEditor` },
+			tooltip: 'Image Editor',
+			url: { external: false, path: '/imageEditor' },
 			icon: 'tdesign:image-edit'
 		},
 		{
-			// Graphql Yoga Explorer
-			url: { external: true, path: `/api/graphql` },
+			tooltip: 'GraphQL Explorer',
+			url: { external: true, path: '/api/graphql' },
 			icon: 'teenyicons:graphql-outline',
 			color: 'bg-pink-500'
 		},
 		{
-			// System Configuration
-			url: { external: false, path: `/config` },
+			tooltip: 'System Configuration',
+			url: { external: false, path: '/config' },
 			icon: 'mynaui:config',
 			color: 'bg-surface-400'
 		},
 		{
-			// Marketplace
-			url: { external: true, path: `https://www.sveltycms.com` },
+			tooltip: 'Access Management',
+			url: { external: false, path: '/config/accessManagement' },
+			icon: 'mdi:shield-account',
+			color: 'bg-purple-500'
+		},
+		{
+			tooltip: 'Marketplace',
+			url: { external: true, path: 'https://www.sveltycms.com' },
 			icon: 'icon-park-outline:shopping-bag',
 			color: 'bg-primary-700'
-		},
-		{
-			// System Configuration
-			url: { external: false, path: `/config` },
-			icon: 'mynaui:config',
-			color: 'bg-surface-400'
 		}
-		//{
+	];
 
-		// 	// GlobalSearch
-		// 	url: { external: false, path: ``}, //this needs to change to alt+s
-		// 	icon: 'material-symbols:search-rounded',
-		// 	color: 'bg-error-500'
-		// }
-	].filter((endpoint) => {
-		if (user?.role === 'admin') return true;
-		else if (endpoint.url.path === '/collection') return false;
-		else return true;
+	// Filter endpoints based on user role
+	const endpoints = $derived(
+		ALL_ENDPOINTS.filter((endpoint) => {
+			if (user?.role === 'admin') return true;
+			if (endpoint.url.path === '/collection') return false;
+			return true;
+		})
+	);
+
+	// State
+	let showRoutes = $state(false);
+	let activeTooltipText = $state('');
+	let prefersReducedMotion = $state(false);
+	let motionMs = $state(MOTION_MS_DEFAULT);
+
+	let buttonInfo = $state({
+		x: 0,
+		y: 0,
+		radius: BUTTON_RADIUS
 	});
 
-	export let buttonInfo: { x: number; y: number; radius: number } = { x: 0, y: 0, radius: buttonRadius };
+	let center = $state({
+		x: browser ? window.innerWidth / 2 : 0,
+		y: browser ? window.innerHeight / 2 : 0
+	});
 
-	// Adjust button position on window resize (mounted only)
-	async function handleResize() {
-		// keep button inside the viewport on resize
-		const minX = buttonRadius + EDGE_MARGIN;
-		const maxX = window.innerWidth - (buttonRadius + EDGE_MARGIN);
-		const minY = buttonRadius + EDGE_MARGIN;
-		const maxY = window.innerHeight - (buttonRadius + EDGE_MARGIN);
-		buttonInfo.x = Math.min(Math.max(buttonInfo.x, minX), maxX);
-		buttonInfo.y = Math.min(Math.max(buttonInfo.y, minY), maxY);
+	// Refs
+	let firstLine: SVGLineElement | undefined = $state(undefined);
+	let firstCircle: HTMLDivElement | undefined = $state(undefined);
+	let svg: SVGSVGElement | undefined = $state(undefined);
+	const circles: (HTMLAnchorElement | undefined)[] = $state([]);
+
+	// Popup ID
+	const NAV_POPUP_ID = 'floatingNavTooltip';
+
+	// Calculate endpoint positions
+	const endpointsWithPos = $derived(
+		endpoints.map((endpoint, index) => {
+			const ANGLE = ((Math.PI * 2) / endpoints.length) * (index + 1.25);
+			const X = center.x + MENU_RADIUS * Math.cos(ANGLE);
+			const Y = center.y + MENU_RADIUS * Math.sin(ANGLE);
+			return { ...endpoint, x: X, y: Y, angle: ANGLE };
+		})
+	);
+
+	// Helper functions
+	function getBasePath(pathname: string): string {
+		const PARAMS = Object.values(page.params);
+		const REPLACED = PARAMS.reduce((acc, param) => acc.replace(param, ''), pathname);
+		return PARAMS.length > 0 ? REPLACED : pathname;
+	}
+
+	function isRightToLeft(): boolean {
+		return browser && document.documentElement.dir === 'rtl';
+	}
+
+	function vibrate(duration: number): void {
+		if (browser) {
+			try {
+				navigator.vibrate?.(duration);
+			} catch {
+				// Vibration not supported
+			}
+		}
+	}
+
+	function loadSavedPosition(): void {
+		if (!browser) return;
+
+		try {
+			const NAVIGATION_INFO = JSON.parse(localStorage.getItem('navigation') || '{}');
+			const KEY = getBasePath(page.url.pathname);
+			const SAVED = NAVIGATION_INFO[KEY] as { x?: number; y?: number } | undefined;
+
+			if (SAVED && typeof SAVED.x === 'number' && typeof SAVED.y === 'number') {
+				buttonInfo = { x: SAVED.x, y: SAVED.y, radius: BUTTON_RADIUS };
+			} else {
+				buttonInfo = {
+					x: window.innerWidth - (BUTTON_RADIUS + EDGE_MARGIN),
+					y: window.innerHeight - (BUTTON_RADIUS + EDGE_MARGIN),
+					radius: BUTTON_RADIUS
+				};
+			}
+		} catch {
+			buttonInfo = {
+				x: window.innerWidth - (BUTTON_RADIUS + EDGE_MARGIN),
+				y: window.innerHeight - (BUTTON_RADIUS + EDGE_MARGIN),
+				radius: BUTTON_RADIUS
+			};
+		}
+	}
+
+	function savePosition(): void {
+		if (!browser) return;
+
+		try {
+			const NAVIGATION_INFO = JSON.parse(localStorage.getItem('navigation') || '{}');
+			const KEY = getBasePath(page.url.pathname);
+			NAVIGATION_INFO[KEY] = { x: buttonInfo.x, y: buttonInfo.y };
+			localStorage.setItem('navigation', JSON.stringify(NAVIGATION_INFO));
+		} catch (error) {
+			logger.error('Failed to save position:', error);
+		}
+	}
+
+	async function handleResize(): Promise<void> {
+		if (!browser) return;
+
+		const MIN_X = BUTTON_RADIUS + EDGE_MARGIN;
+		const MAX_X = window.innerWidth - (BUTTON_RADIUS + EDGE_MARGIN);
+		const MIN_Y = BUTTON_RADIUS + EDGE_MARGIN;
+		const MAX_Y = window.innerHeight - (BUTTON_RADIUS + EDGE_MARGIN);
+
+		buttonInfo.x = Math.min(Math.max(buttonInfo.x, MIN_X), MAX_X);
+		buttonInfo.y = Math.min(Math.max(buttonInfo.y, MIN_Y), MAX_Y);
 		center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+
 		if (firstLine && firstCircle) {
 			firstLine.setAttribute('x1', firstCircle.offsetLeft.toString());
 			firstLine.setAttribute('y1', firstCircle.offsetTop.toString());
@@ -145,84 +239,19 @@ with quick access to main sections: Home, User, Collections, Config, etc.
 		}
 	}
 
-	function getBasePath(pathname: string) {
-		const params = Object.values($page.params);
-		const replaced = params.reduce((acc, param) => {
-			acc = acc.replace(param, '');
-			return acc;
-		}, pathname);
-		return params.length > 0 ? replaced : pathname;
-	}
-
-	// Button position is exported with a default; refined on mount
-
-	onMount(() => {
-		// read persisted navigation positions
-		try {
-			navigation_info = JSON.parse(localStorage.getItem('navigation') || '{}');
-		} catch {
-			navigation_info = {};
-		}
-
-		center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-
-		// motion preference
-		prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		MOTION_MS = prefersReducedMotion ? 0 : 200;
-
-		// restore position for this page if available
-		const key = getBasePath($page.url.pathname);
-		const saved = navigation_info[key];
-		if (saved && typeof saved.x === 'number' && typeof saved.y === 'number') {
-			buttonInfo = { x: saved.x, y: saved.y, radius: buttonRadius };
-			center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-		} else {
-			buttonInfo = {
-				x: window.innerWidth - (buttonRadius + EDGE_MARGIN),
-				y: window.innerHeight - (buttonRadius + EDGE_MARGIN),
-				radius: buttonRadius
-			};
-			center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-		}
-
-		window.addEventListener('resize', handleResize, { passive: true });
-		window.addEventListener('keydown', onKeyDown);
-	});
-
-	onDestroy(() => {
-		window.removeEventListener('resize', handleResize);
-		window.removeEventListener('keydown', onKeyDown);
-	});
-
-	// Derived radius roughly matches the visual ring (~340px diameter => 170px radius)
-	const MENU_RADIUS = 160;
-
-	// Calculate endpoint positions and angles based on their index
-	$: endpointsWithPos = endpoints.map((endpoint, index) => {
-		const angle = ((Math.PI * 2) / endpoints.length) * (index + 1.25);
-		const x = center.x + MENU_RADIUS * Math.cos(angle);
-		const y = center.y + MENU_RADIUS * Math.sin(angle);
-		return { ...endpoint, x, y, angle };
-	});
-
-	// Show the routes when the component is visible
-	function closeMenu() {
+	function closeMenu(): void {
 		if (!showRoutes) return;
 		showRoutes = false;
-		try {
-			navigator.vibrate?.(5);
-		} catch {}
+		vibrate(VIBRATE_CLOSE_MS);
 		setTimeout(() => firstCircle?.focus?.(), 0);
 	}
 
-	async function toggleMenuOpen() {
+	async function toggleMenuOpen(): Promise<void> {
 		if (!showRoutes) {
 			center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
 			await tick();
 			showRoutes = true;
-			try {
-				navigator.vibrate?.(10);
-			} catch {}
+			vibrate(VIBRATE_OPEN_MS);
 			await tick();
 			circles[0]?.focus?.();
 		} else {
@@ -230,285 +259,293 @@ with quick access to main sections: Home, User, Collections, Config, etc.
 		}
 	}
 
-	function onKeyDown(e: KeyboardEvent) {
+	function onKeyDown(e: KeyboardEvent): void {
 		if (e.key === 'Escape') closeMenu();
 	}
 
+	function handleNavigateToEndpoint(): void {
+		showRoutes = false;
+		// Navigation is handled by <a> tag href attribute
+	}
+
+	function handleNavigateHome(): void {
+		setMode('view');
+		modalStore.clear();
+		toggleUIElement('leftSidebar', 'hidden');
+		showRoutes = false;
+		// Navigation will be handled by <a> tag
+	}
+
+	// Drag functionality
 	function drag(node: HTMLDivElement) {
 		let moved = false;
-		let timeout: ReturnType<typeof setTimeout>;
-		let raf = 0;
-		let nextX = 0,
-			nextY = 0;
-		node.onpointerdown = (e) => {
-			timeout = setTimeout(() => {
-				const x = e.offsetX - node.offsetWidth / 2;
-				const y = e.offsetY - node.offsetHeight / 2;
-				buttonInfo = { ...buttonInfo, x: e.clientX - x, y: e.clientY - y };
-				node.setPointerCapture(e.pointerId);
-				node.onpointermove = (e) => {
-					moved = true;
-					nextX = e.clientX - x;
-					nextY = e.clientY - y;
-					if (!raf) {
-						raf = requestAnimationFrame(() => {
-							buttonInfo = { ...buttonInfo, x: nextX, y: nextY };
-							if (firstLine) firstLine.style.strokeDasharray = firstLine.getTotalLength().toString();
-							raf = 0;
-						});
-					}
-				};
-			}, 60);
-		};
-		node.onpointerup = async (e) => {
-			if (!moved) await toggleMenuOpen();
+		let dragging = false;
+		let startX = 0;
+		let startY = 0;
 
-			timeout && clearTimeout(timeout);
+		node.onpointerdown = (e) => {
+			startX = e.clientX;
+			startY = e.clientY;
 			moved = false;
+			dragging = false;
+			node.setPointerCapture(e.pointerId);
+
+			node.onpointermove = (moveEvent) => {
+				const DX = moveEvent.clientX - startX;
+				const DY = moveEvent.clientY - startY;
+				const DISTANCE = Math.sqrt(DX * DX + DY * DY);
+
+				if (!dragging && DISTANCE > DRAG_THRESHOLD) {
+					dragging = true;
+				}
+
+				if (dragging) {
+					moved = true;
+					const OFFSET_X = e.offsetX - node.offsetWidth / 2;
+					const OFFSET_Y = e.offsetY - node.offsetHeight / 2;
+
+					buttonInfo = {
+						...buttonInfo,
+						x: moveEvent.clientX - OFFSET_X,
+						y: moveEvent.clientY - OFFSET_Y
+					};
+
+					if (firstLine) {
+						firstLine.style.strokeDasharray = firstLine.getTotalLength().toString();
+					}
+				}
+			};
+		};
+
+		node.onpointerup = async (e) => {
+			if (!dragging) {
+				await toggleMenuOpen();
+			}
+
 			node.onpointermove = null;
 			node.releasePointerCapture(e.pointerId);
-			if (raf) {
-				cancelAnimationFrame(raf);
-				raf = 0;
-			}
 
-			const distance = [
-				buttonInfo.x, //left
-				window.innerWidth - buttonInfo.x, //right
-				buttonInfo.y, //top
-				window.innerHeight - buttonInfo.y //bottom
-			];
+			if (!moved) return;
 
-			let promise: Promise<void>;
+			// Snap to nearest edge
+			const DISTANCES = [buttonInfo.x, window.innerWidth - buttonInfo.x, buttonInfo.y, window.innerHeight - buttonInfo.y];
 
-			switch (distance.indexOf(Math.min(...distance))) {
-				case 0:
-					{
-						promise = motion([buttonInfo.x], [buttonRadius + EDGE_MARGIN], MOTION_MS, async (t) => {
-							buttonInfo.x = t[0];
-							await tick();
-							firstLine && (firstLine.style.strokeDasharray = firstLine.getTotalLength().toString());
-						});
-					}
+			const NEAREST_EDGE_INDEX = DISTANCES.indexOf(Math.min(...DISTANCES));
+			let promise: Promise<void> = Promise.resolve();
+
+			switch (NEAREST_EDGE_INDEX) {
+				case 0: // Left edge
+					promise = motion([buttonInfo.x], [BUTTON_RADIUS + EDGE_MARGIN], motionMs, async (t) => {
+						buttonInfo.x = t[0];
+						await tick();
+						if (firstLine) firstLine.style.strokeDasharray = firstLine.getTotalLength().toString();
+					});
 					break;
-				case 1:
-					{
-						promise = motion([buttonInfo.x], [window.innerWidth - (buttonRadius + EDGE_MARGIN)], MOTION_MS, async (t) => {
-							buttonInfo.x = t[0];
-							await tick();
-							firstLine && (firstLine.style.strokeDasharray = firstLine.getTotalLength().toString());
-						});
-					}
+				case 1: // Right edge
+					promise = motion([buttonInfo.x], [window.innerWidth - (BUTTON_RADIUS + EDGE_MARGIN)], motionMs, async (t) => {
+						buttonInfo.x = t[0];
+						await tick();
+						if (firstLine) firstLine.style.strokeDasharray = firstLine.getTotalLength().toString();
+					});
 					break;
-				case 2:
-					{
-						promise = motion([buttonInfo.y], [buttonRadius + EDGE_MARGIN], MOTION_MS, async (t) => {
-							buttonInfo.y = t[0];
-							await tick();
-							firstLine && (firstLine.style.strokeDasharray = firstLine.getTotalLength().toString());
-						});
-					}
+				case 2: // Top edge
+					promise = motion([buttonInfo.y], [BUTTON_RADIUS + EDGE_MARGIN], motionMs, async (t) => {
+						buttonInfo.y = t[0];
+						await tick();
+						if (firstLine) firstLine.style.strokeDasharray = firstLine.getTotalLength().toString();
+					});
 					break;
-				case 3:
-					{
-						promise = motion([buttonInfo.y], [window.innerHeight - (buttonRadius + EDGE_MARGIN)], MOTION_MS, async (t) => {
-							buttonInfo.y = t[0];
-							await tick();
-							firstLine && (firstLine.style.strokeDasharray = firstLine.getTotalLength().toString());
-						});
-					}
+				case 3: // Bottom edge
+					promise = motion([buttonInfo.y], [window.innerHeight - (BUTTON_RADIUS + EDGE_MARGIN)], motionMs, async (t) => {
+						buttonInfo.y = t[0];
+						await tick();
+						if (firstLine) firstLine.style.strokeDasharray = firstLine.getTotalLength().toString();
+					});
 					break;
 			}
-
-			await tick();
-			firstLine && (firstLine.style.strokeDasharray = firstLine.getTotalLength().toString());
 
 			await promise;
-			navigation_info = { ...navigation_info, ...{ [getBasePath($page.url.pathname)]: buttonInfo } };
-			localStorage.setItem('navigation', JSON.stringify(navigation_info));
+			savePosition();
 		};
 	}
 
-	// Set the dash of the line
-	function setDash(node: SVGElement) {
+	function setDash(node: SVGSVGElement): void {
 		let first = true;
-		for (const lineElement of node.children) {
-			const el = lineElement as SVGLineElement;
-			const totalLength = el.getTotalLength().toString();
-			el.style.strokeDasharray = totalLength;
-			el.style.strokeDashoffset = totalLength;
+		for (const LINE_ELEMENT of node.children as HTMLCollectionOf<SVGLineElement>) {
+			const EL = LINE_ELEMENT as SVGLineElement;
+			const TOTAL_LENGTH = EL.getTotalLength().toString();
+			EL.style.strokeDasharray = TOTAL_LENGTH;
+			EL.style.strokeDashoffset = TOTAL_LENGTH;
 			setTimeout(() => {
-				el.style.transition = first ? 'stroke-dashoffset 0.2s ' : 'stroke-dashoffset 0.2s 0.2s';
-				el.style.strokeDashoffset = '0';
+				EL.style.transition = first ? 'stroke-dashoffset 0.2s' : 'stroke-dashoffset 0.2s 0.2s';
+				EL.style.strokeDashoffset = '0';
 				first = false;
 			}, 0);
 		}
 	}
 
-	// Reverse the dash
-	function reverse() {
+	function reverse(): void {
 		if (!svg) return;
+
 		let first = true;
-		for (const lineElement of svg.children) {
-			const el = lineElement as SVGLineElement;
-			el.style.transition = first ? 'stroke-dashoffset 0.2s 0.2s' : 'stroke-dashoffset 0.2s ';
-			const totalLength = el.getTotalLength().toString();
-			el.style.strokeDasharray = totalLength;
-			el.style.strokeDashoffset = totalLength;
+		for (const LINE_ELEMENT of svg.children as HTMLCollectionOf<SVGLineElement>) {
+			const EL = LINE_ELEMENT as SVGLineElement;
+			EL.style.transition = first ? 'stroke-dashoffset 0.2s 0.2s' : 'stroke-dashoffset 0.2s';
+			const TOTAL_LENGTH = EL.getTotalLength().toString();
+			EL.style.strokeDasharray = TOTAL_LENGTH;
+			EL.style.strokeDashoffset = TOTAL_LENGTH;
 			first = false;
 		}
-		for (const circle of circles) {
-			circle.style.display = 'none';
+
+		for (const CIRCLE of circles as HTMLAnchorElement[]) {
+			if (CIRCLE) CIRCLE.style.display = 'none';
 		}
 	}
 
-	// Animate the dash
-	$: if (!showRoutes) reverse();
-	function keepAlive(node, { delay = 0, duration = 200, easing: easing$1 = linear } = {}) {
-		return {
-			delay,
-			duration,
-			easing: easing$1,
-			css: (t) => ``
-		};
+	function keepAlive(_node: HTMLElement, { delay = 0, duration = 200, easing: easingFn = linear } = {}) {
+		return { delay, duration, easing: easingFn, css: (_: number) => '' };
 	}
 
-	function isRightToLeft() {
-		return document.documentElement.dir === 'rtl';
-	}
+	// Effects
+	$effect(() => {
+		if (!showRoutes) reverse();
+	});
+
+	// Lifecycle
+	onMount(() => {
+		if (!browser) return;
+
+		prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+		motionMs = prefersReducedMotion ? 0 : MOTION_MS_DEFAULT;
+
+		center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+		loadSavedPosition();
+
+		window.addEventListener('resize', handleResize, { passive: true });
+		window.addEventListener('keydown', onKeyDown);
+	});
+
+	onDestroy(() => {
+		if (!browser) return;
+
+		window.removeEventListener('resize', handleResize);
+		window.removeEventListener('keydown', onKeyDown);
+	});
 </script>
 
-<!-- Start Nav Button-->
+<!-- Tooltip -->
+<div class="card variant-filled-surface z-[99999999] p-2" data-popup={NAV_POPUP_ID}>
+	{activeTooltipText}
+	<div class="variant-filled-surface arrow"></div>
+</div>
+
+<!-- Main navigation button -->
 <div
 	bind:this={firstCircle}
-	aria-label="Open navigation"
+	use:popup={{ event: 'hover', target: NAV_POPUP_ID, placement: 'top' }}
+	onmouseenter={() => (activeTooltipText = 'Open Navigation Menu')}
+	onmouseleave={() => (activeTooltipText = '')}
+	aria-label="Open Navigation Menu"
 	role="button"
 	aria-expanded={showRoutes}
+	tabindex="0"
 	use:drag
-	class="circle flex touch-none items-center justify-center bg-tertiary-500"
-	style="top:{(Math.min(buttonInfo.y, window.innerHeight - buttonRadius) / window.innerHeight) * 100}%;left:{(Math.min(
-		isRightToLeft() ? buttonRadius : buttonInfo.x, // Change left position based on RTL
-		window.innerWidth - buttonRadius
-	) /
-		window.innerWidth) *
-		100}%;width:{buttonRadius * 2}px;height:{buttonRadius * 2}px"
+	class="fixed z-[99999999] flex -translate-x-1/2 -translate-y-1/2 cursor-pointer touch-none items-center justify-center rounded-full bg-tertiary-500 active:scale-90 [&&>*]:pointer-events-none"
+	style="top:{(Math.min(buttonInfo.y, browser ? window.innerHeight - BUTTON_RADIUS : 0) / (browser ? window.innerHeight : 1)) * 100}%;
+	       left:{(Math.min(isRightToLeft() ? BUTTON_RADIUS : buttonInfo.x, browser ? window.innerWidth - BUTTON_RADIUS : 0) /
+		(browser ? window.innerWidth : 1)) *
+		100}%;
+	       width:{BUTTON_RADIUS * 2}px;
+	       height:{BUTTON_RADIUS * 2}px"
+	onkeydown={(event) => {
+		if (event.key === 'Enter' || event.key === ' ') {
+			event.preventDefault();
+			toggleMenuOpen();
+		}
+	}}
 >
 	<iconify-icon icon="tdesign:map-route-planning" width="36" style="color:white"></iconify-icon>
 </div>
 
-<!-- Show the routes when the component is visible -->
 {#if showRoutes}
-	<button out:keepAlive|local on:click|self={closeMenu} class=" fixed left-0 top-0 z-[9999999]" aria-label="Close navigation overlay">
-		<svg bind:this={svg} xmlns="http://www.w3.org/2000/svg" use:setDash>
+	<button out:keepAlive|local onclick={closeMenu} class="fixed left-0 top-0 z-[9999999]" aria-label="Close navigation overlay">
+		<svg
+			bind:this={svg}
+			xmlns="http://www.w3.org/2000/svg"
+			use:setDash
+			class="pointer-events-none fixed left-0 top-0 h-full w-full [&&>line]:pointer-events-none [&&>line]:stroke-[#da1f1f] [&&>line]:stroke-[3px]"
+		>
 			<line bind:this={firstLine} x1={buttonInfo.x} y1={buttonInfo.y} x2={center.x} y2={center.y} />
-			{#each endpointsWithPos.slice(1, endpointsWithPos.length) as endpoint}
+			{#each endpointsWithPos.slice(1) as endpoint (endpoint.tooltip)}
 				<line x1={center.x} y1={center.y} x2={endpoint.x} y2={endpoint.y} />
 			{/each}
 		</svg>
 
-		<!-- Home button -->
 		<div
 			transition:fade
-			class="absolute left-1/2 top-1/4 -z-10 -translate-x-1/2 -translate-y-1/2 rounded-full border bg-tertiary-500/40"
-			style="top:{center.y}px;left:{center.x}px;width:{MENU_RADIUS * 2}px;height:{MENU_RADIUS *
-				2}px;visibility:hidden; animation: showEndPoints 0.2s 0.2s forwards"
+			class="absolute left-1/2 top-1/4 z-[9999998] -translate-x-1/2 -translate-y-1/2 animate-[showEndPoints_0.2s_0.2s_forwards] rounded-full border bg-tertiary-500/40"
+			style="top:{center.y}px;
+			       left:{center.x}px;
+			       width:{MENU_RADIUS * 2}px;
+			       height:{MENU_RADIUS * 2}px"
 		></div>
 
-		<!-- Other endpoint buttons -->
-		<div
+		<a
 			bind:this={circles[0]}
-			role="button"
-			aria-label="Home"
-			tabindex="0"
-			on:click={() => {
-				mode.set('view');
-				modalStore.clear();
-				toggleUIElement('leftSidebar', 'hidden');
-				endpoints[0]?.url?.external ? (location.href = endpoints[0]?.url?.path || '/') : goto(endpoints[0]?.url?.path || '/');
-				showRoutes = false;
-			}}
-			on:keydown={(event) => {
-				if (event.key === 'Enter' || event.key === ' ') {
-					// Trigger the same action as on:click
-					mode.set('view');
-					modalStore.clear();
-					toggleUIElement('leftSidebar', 'hidden');
-					endpoints[0]?.url?.external ? (location.href = endpoints[0]?.url?.path || '/') : goto(endpoints[0]?.url?.path || '/');
-					showRoutes = false;
-				}
-			}}
-			class="circle flex items-center justify-center border-2 bg-gray-600"
-			style="top:{center.y}px;left:{center.x}px;visibility:hidden; animation: showEndPoints 0.2s 0.2s forwards"
+			href={endpoints[0]?.url?.path || '/'}
+			target={endpoints[0]?.url?.external ? '_blank' : undefined}
+			rel={endpoints[0]?.url?.external ? 'noopener noreferrer' : undefined}
+			data-sveltekit-preload-data={endpoints[0]?.url?.external ? undefined : 'hover'}
+			use:popup={{ event: 'hover', target: NAV_POPUP_ID, placement: 'top' }}
+			onmouseenter={() => (activeTooltipText = endpoints[0]?.tooltip || '')}
+			onmouseleave={() => (activeTooltipText = '')}
+			onclick={handleNavigateHome}
+			aria-label={endpoints[0]?.tooltip || 'Home'}
+			class="fixed z-[99999999] flex h-[50px] w-[50px] -translate-x-1/2 -translate-y-1/2 animate-[showEndPoints_0.2s_0.2s_forwards] cursor-pointer items-center justify-center rounded-full border-2 bg-tertiary-500"
+			style="top:{center.y}px;
+			       left:{center.x}px"
 		>
-			<iconify-icon width="32" style="color:white" icon="solar:home-bold"></iconify-icon>
-		</div>
+			<iconify-icon width="32" style="color:white" icon={endpoints[0]?.icon || 'solar:home-bold'}></iconify-icon>
+		</a>
 
-		{#each endpointsWithPos.slice(1, endpointsWithPos.length) as endpoint, index}
-			<div
+		{#each endpointsWithPos.slice(1) as endpoint, index (endpoint.tooltip)}
+			<a
 				bind:this={circles[index + 1]}
-				typeof="button"
-				role={endpoint.icon}
-				aria-label={endpoint.icon}
-				on:click={() => {
-					if (endpoint?.url?.external) {
-						window.open(endpoint?.url?.path || '/', '_blank');
-					} else {
-						goto(endpoint?.url?.path || '/');
-					}
-					showRoutes = false;
-				}}
-				class="circle flex items-center justify-center {endpoint.color || 'bg-tertiary-500'}"
-				style="top:{endpoint.y}px;left:{endpoint.x}px;animation: showEndPoints 0.2s 0.4s forwards"
+				href={endpoint.url.path}
+				target={endpoint.url.external ? '_blank' : undefined}
+				rel={endpoint.url.external ? 'noopener noreferrer' : undefined}
+				data-sveltekit-preload-data={endpoint.url.external ? undefined : 'hover'}
+				use:popup={{ event: 'hover', target: NAV_POPUP_ID, placement: 'top' }}
+				onmouseenter={() => (activeTooltipText = endpoint.tooltip)}
+				onmouseleave={() => (activeTooltipText = '')}
+				onclick={handleNavigateToEndpoint}
+				aria-label={endpoint.tooltip}
+				class="fixed z-[99999999] flex h-[50px] w-[50px] -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full {endpoint.color ||
+					'bg-tertiary-500'} animate-[showEndPoints_0.2s_0.4s_forwards] hover:scale-150 active:scale-100"
+				style="top:{endpoint.y}px;
+			       left:{endpoint.x}px"
 			>
-				<!-- Icon for the button -->
 				<iconify-icon width="32" style="color:white" icon={endpoint.icon}></iconify-icon>
-			</div>
+			</a>
 		{/each}
 	</button>
 {/if}
 
 <style lang="postcss">
-	.circle {
-		position: fixed;
-		transform: translate(-50%, -50%);
-		border-radius: 50%;
-		width: 50px;
-		height: 50px;
-		cursor: pointer;
-		z-index: 99999999;
-	}
-	.circle:not(:first-of-type):hover {
-		transform: translate(-50%, -50%) scale(1.5);
-	}
-	.circle:not(:first-of-type):active {
-		transform: translate(-50%, -50%) scale(1) !important;
-	}
-	.circle:first-of-type:active {
-		transform: translate(-50%, -50%) scale(0.9) !important;
-	}
-
-	svg {
-		position: fixed;
-		left: 0;
-		top: 0;
-		height: 100%;
-		width: 100%;
-		pointer-events: none;
-	}
-
-	line {
-		stroke: #da1f1f;
-		stroke-width: 3;
-		pointer-events: none;
-	}
-
-	@keyframes -global-showEndPoints {
+	@keyframes showEndPoints {
 		from {
+			opacity: 0;
 			visibility: hidden;
 		}
-		100% {
+		to {
 			opacity: 1;
 			visibility: visible;
 		}
+	}
+
+	/* Make animation globally available */
+	:global(.animate-\[showEndPoints_0\.2s_0\.2s_forwards\]),
+	:global(.animate-\[showEndPoints_0\.2s_0\.4s_forwards\]) {
+		animation-name: showEndPoints;
 	}
 </style>

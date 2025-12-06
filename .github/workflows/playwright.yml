@@ -1,283 +1,237 @@
+# .github/workflows/playwright.yml
+#
+# CURRENT: Tests run against MongoDB only
+# FUTURE: Will use matrix strategy to test against multiple databases in parallel:
+#   - MongoDB (current)
+#   - PostgreSQL (via Drizzle ORM)
+#   - MariaDB (via Drizzle ORM)
+#   - MySQL (via Drizzle ORM)
+#
+# Example future matrix configuration:
+#   strategy:
+#     matrix:
+#       database: [mongodb, postgresql, mariadb, mysql]
+#     include:
+#       - database: mongodb
+#         db_image: mongo:latest
+#       - database: postgresql
+#         db_image: postgres:16
+#       - database: mariadb
+#         db_image: mariadb:11
+#       - database: mysql
+#         db_image: mysql:8
+
 name: Playwright and Bun Tests
 
-# Trigger on pushes to main and next, and on Pull Requests to main
 on:
   push:
-    branches:
-      - main
-      - next
+    branches: [main, next]
   pull_request:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch: {}
+  workflow_call: {}
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
 
 jobs:
-  test:
-    name: SveltyCMS Playwright Tests
-    timeout-minutes: 60
+  # ------------------------------------------------------------------
+  # 1. Unit Tests (Fastest, no server needed)
+  # ------------------------------------------------------------------
+  unit-tests:
+    name: ⚡ Unit Tests
+    timeout-minutes: 10
     runs-on: ubuntu-latest
-
-    strategy:
-      fail-fast: true
-      matrix:
-        mongodb-version: [latest]
-        test-file:
-          [
-            '/tests/playwright/signupfirstuser.spec.ts',
-            '/tests/playwright/user.spec.ts',
-            '/tests/playwright/oauth-signup-firstuser.spec.ts',
-            '/tests/playwright/collection.spec.ts',
-            '/tests/playwright/language.spec.ts',
-            '/tests/playwright/login.spec.ts',
-            '/tests/playwright/permission-change.spec.ts',
-            '/tests/playwright/user-crud.spec.ts'
-          ]
-
     steps:
-      - name: Git checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Bun
-        uses: oven-sh/setup-bun@v1
+        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
         with:
           bun-version: latest
 
-      - name: Cache Bun dependencies and Playwright browsers
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.bun/install/cache
-            ~/.cache/ms-playwright
-          key: ${{ runner.OS }}-bun-playwright-${{ hashFiles('**/bun.lockb') }}
-          restore-keys: |
-            ${{ runner.OS }}-bun-playwright-
-        continue-on-error: true
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
-      - name: Start MongoDB v${{ matrix.mongodb-version }}
-        uses: supercharge/mongodb-github-action@1.10.0
+      - name: Run Unit Tests
+        run: bun run test:unit
+
+  # ------------------------------------------------------------------
+  # 2. Integration Tests (Requires Server + MongoDB)
+  # ------------------------------------------------------------------
+  integration-tests:
+    name: 🔌 Integration Tests
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:latest
+        ports: [27017:27017]
+        env:
+          MONGO_INITDB_ROOT_USERNAME: admin
+          MONGO_INITDB_ROOT_PASSWORD: admin
+    env:
+      DB_TYPE: mongodb
+      DB_HOST: localhost
+      DB_PORT: 27017
+      DB_NAME: sveltycms_test
+      DB_USER: admin
+      DB_PASSWORD: admin
+      TEST_MODE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
         with:
-          mongodb-version: ${{ matrix.mongodb-version }}
-          mongodb-username: admin
-          mongodb-password: admin
-          mongodb-db: SveltyCMS
-          mongodb-port: 27017
-        # CORRECTED: Removed the 'if' condition to ensure MongoDB runs for pull requests as well.
+          bun-version: latest
 
       - name: Install dependencies
-        run: bun install
+        run: bun install --frozen-lockfile
+
+      # Ensure fresh state - remove any existing config
+      - name: Clean config for fresh CI run
+        run: |
+          echo "🧹 Ensuring fresh state for CI..."
+          rm -rf config/collections
+          rm -f config/private.ts
+          echo "✅ Cleaned config directory"
+
+      # Create placeholder config/private.test.ts to ensure runtime config works
+      - name: Create placeholder config/private.test.ts
+        run: |
+          echo "📝 Creating placeholder config/private.test.ts..."
+          cat > config/private.test.ts <<EOF
+          export const privateEnv = {
+            DB_TYPE: '${{ env.DB_TYPE }}',
+            DB_HOST: '${{ env.DB_HOST }}',
+            DB_PORT: ${{ env.DB_PORT }},
+            DB_NAME: '${{ env.DB_NAME }}',
+            DB_USER: '${{ env.DB_USER }}',
+            DB_PASSWORD: '${{ env.DB_PASSWORD }}',
+            JWT_SECRET_KEY: 'test_jwt_secret',
+            ENCRYPTION_KEY: 'test_encryption_key',
+            MULTI_TENANT: false
+          } as const;
+          EOF
+          echo "✅ Created config/private.test.ts"
+
+      # Build production version for faster, optimized testing
+      - name: Build Production
+        run: bun run build
+
+      # --- START PREVIEW SERVER (PORT 4173) ---
+      - name: Start Preview Server
+        run: |
+          echo "🚀 Starting preview server on port 4173..."
+          bun run preview &
+          echo "⏳ Waiting for server to be ready..."
+          bun x wait-on http://localhost:4173 -t 60000
+          echo "✅ Preview server is ready!"
+
+      - name: Run Integration Tests
+        run: bun run test:integration
+
+  # ------------------------------------------------------------------
+  # 3. E2E Tests (Requires Server + MongoDB + Browser)
+  # ------------------------------------------------------------------
+  e2e-tests:
+    name: 🎭 E2E Tests
+    timeout-minutes: 30 # Increased to fix your timeout issue
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:latest
+        ports: [27017:27017]
+        env:
+          MONGO_INITDB_ROOT_USERNAME: admin
+          MONGO_INITDB_ROOT_PASSWORD: admin
+    env:
+      DB_TYPE: mongodb
+      DB_HOST: localhost
+      DB_PORT: 27017
+      DB_NAME: sveltycms_test
+      DB_USER: admin
+      DB_PASSWORD: admin
+      TEST_MODE: 'true'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@4bc047ad259df6fc24a6c9b0f9a0cb08cf17fbe5 # v2.0.1
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
 
       - name: Install Playwright Browsers
-        run: bunx playwright install --with-deps
+        run: bun x playwright install --with-deps chromium
 
-      - name: Run local server
-        run: bun run build && bun run preview &
-
-      - name: Run Playwright tests
+      # Ensure fresh state - remove any existing config
+      - name: Clean config for fresh CI run
         run: |
-          mkdir -p test-results/playwright
-          # The loop for running tests in parallel is a good approach.
-          for file in ${{ matrix.test-file }}; do
-            bunx playwright test $file --workers 10 --output=test-results/playwright &
-          done
-          wait
+          echo "🧹 Ensuring fresh state for CI..."
+          rm -rf config/collections
+          rm -f config/private.ts
+          echo "✅ Cleaned config directory"
+
+      # Create placeholder config/private.test.ts to ensure runtime config works
+      - name: Create placeholder config/private.test.ts
+        run: |
+          echo "📝 Creating placeholder config/private.test.ts..."
+          cat > config/private.test.ts <<EOF
+          export const privateEnv = {
+            DB_TYPE: '${{ env.DB_TYPE }}',
+            DB_HOST: '${{ env.DB_HOST }}',
+            DB_PORT: ${{ env.DB_PORT }},
+            DB_NAME: '${{ env.DB_NAME }}',
+            DB_USER: '${{ env.DB_USER }}',
+            DB_PASSWORD: '${{ env.DB_PASSWORD }}',
+            JWT_SECRET_KEY: 'test_jwt_secret',
+            ENCRYPTION_KEY: 'test_encryption_key',
+            MULTI_TENANT: false
+          } as const;
+          EOF
+          echo "✅ Created config/private.test.ts"
+
+      # Build production version for faster, optimized testing
+      - name: Build Production
+        run: bun run build
+
+      # --- START PREVIEW SERVER (PORT 4173) ---
+      - name: Start Preview Server
+        run: |
+          echo "🚀 Starting preview server on port 4173..."
+          bun run preview &
+          echo "⏳ Waiting for server to be ready..."
+          bun x wait-on http://localhost:4173 -t 60000
+          echo "✅ Preview server is ready!"
+
+      # STEP A: Run the Setup Wizard first to initialize the DB/User
+      - name: 🧙‍♂️ Run Setup Wizard Test
+        run: |
+          echo "=== Running setup wizard to initialize application ==="
+          # Runs ONLY the setup wizard spec
+          bunx playwright test tests/playwright/setup-wizard.spec.ts --project=chromium --reporter=list
         env:
-          # --- CORRECTED: Private Configuration ---
-          # Note: Prefixes like 'privateEnv.' are removed. All values are strings.
-          # The application code is expected to parse numbers, booleans, and JSON strings.
-          DB_TYPE: 'mongodb'
-          DB_HOST: 'localhost' # CORRECTED: Use 'localhost', not the full connection string URI
-          DB_PORT: '27017'
-          DB_NAME: 'SveltyCMS'
-          DB_USER: 'admin'
-          DB_PASSWORD: 'admin'
-          DB_RETRY_DELAY: '1000'
-          DB_RETRY_ATTEMPTS: '3'
-          DB_POOL_SIZE: '5'
-          MULTI_TENANT: 'false'
+          # Setup Wizard specific envs (if your app uses them to seed)
+          ADMIN_EMAIL: admin@example.com
+          ADMIN_PASS: Admin123!
 
-          SMTP_HOST: ''
-          SMTP_PORT: '587'
-          SMTP_EMAIL: ''
-          SMTP_PASSWORD: ''
-          SERVER_PORT: '4173'
-
-          # CORRECTED: Conditional validation for Google OAuth requires these if USE_GOOGLE_OAUTH is true.
-          USE_GOOGLE_OAUTH: 'true'
-          GOOGLE_CLIENT_ID: 'dummy-google-client-id-for-testing.apps.googleusercontent.com'
-          GOOGLE_CLIENT_SECRET: 'GOCSPX-dummy-google-client-secret-for-ci'
-
-          # CORRECTED: Set USE_REDIS to false, so other REDIS variables are not required.
-          USE_REDIS: 'false'
-          REDIS_HOST: ''
-          REDIS_PORT: ''
-          REDIS_PASSWORD: ''
-
-          SESSION_CLEANUP_INTERVAL: '60000'
-          MAX_IN_MEMORY_SESSIONS: '1000'
-          DB_VALIDATION_PROBABILITY: '0.1'
-          SESSION_EXPIRATION_SECONDS: '86400'
-
-          USE_MAPBOX: 'false'
-          MAPBOX_API_TOKEN: ''
-          SECRET_MAPBOX_API_TOKEN: ''
-
-          GOOGLE_API_KEY: ''
-          TWITCH_TOKEN: ''
-          USE_TIKTOK: 'false'
-          TIKTOK_TOKEN: ''
-          LLM_APIS: '{}'
-
-          # CORRECTED: ROLES and PERMISSIONS must be non-empty JSON arrays.
-          ROLES: '["admin", "editor"]'
-          PERMISSIONS: '["create", "read", "update", "delete"]'
-
-          # CORRECTED: JWT_SECRET_KEY must be at least 32 characters long.
-          JWT_SECRET_KEY: 'a-super-secret-jwt-key-for-github-actions-that-is-long-enough'
-
-          USE_2FA: 'false'
-          TWO_FACTOR_AUTH_SECRET: ''
-          TWO_FACTOR_AUTH_BACKUP_CODES_COUNT: '10'
-
-          # --- CORRECTED: Public Configuration ---
-          HOST_DEV: 'http://localhost:5173'
-          HOST_PROD: 'http://localhost:4173'
-          SITE_NAME: 'SveltyCMS Test Site'
-          PASSWORD_LENGTH: '8'
-
-          # CORRECTED: DEFAULT_CONTENT_LANGUAGE must be in AVAILABLE_CONTENT_LANGUAGES
-          DEFAULT_CONTENT_LANGUAGE: 'en'
-          AVAILABLE_CONTENT_LANGUAGES: '["en", "de", "es"]'
-          # CORRECTED: Added missing required BASE_LOCALE and LOCALES
-          BASE_LOCALE: 'en'
-          LOCALES: '["en", "de"]'
-
-          MEDIA_FOLDER: 'ci-media-files'
-          # CORRECTED: Objects must be valid JSON strings.
-          MEDIA_OUTPUT_FORMAT_QUALITY: '{"format": "webp", "quality": 75}'
-          MEDIASERVER_URL: ''
-          IMAGE_SIZES: '{"thumbnail": 150, "card": 600}'
-          MAX_FILE_SIZE: '10485760'
-          BODY_SIZE_LIMIT: '104857600'
-          EXTRACT_DATA_PATH: ''
-          USE_ARCHIVE_ON_DELETE: 'true'
-
-          SEASONS: 'false'
-          SEASON_REGION: '' # Not needed if SEASONS is false
-          PKG_VERSION: 'ci-test-version'
-
-          # CORRECTED: LOG_LEVELS must be a valid JSON array string.
-          LOG_LEVELS: '["info", "error", "warn"]'
-          LOG_RETENTION_DAYS: '7'
-          LOG_ROTATION_SIZE: '5242880' # 5MB
-
-          DEMO: 'true'
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: playwright-test-results
-          path: test-results/playwright/
-          retention-days: 30
-
-  bun-tests:
-    name: SveltyCMS Bun Tests
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Git checkout
-        uses: actions/checkout@v4
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v1
-        with:
-          bun-version: latest
-
-      - name: Start MongoDB # CORRECTED: Added MongoDB service to this job
-        uses: supercharge/mongodb-github-action@1.10.0
-        with:
-          mongodb-version: latest
-          mongodb-username: admin
-          mongodb-password: admin
-          mongodb-db: SveltyCMS
-          mongodb-port: 27017
-
-      - name: Install dependencies
-        run: bun install
-
-      - name: Run Bun tests
+      # STEP B: Run the rest of the tests (skipping the wizard)
+      - name: 🧪 Run Application E2E Tests
+        if: success() # Only run if Wizard passed
         run: |
-          mkdir -p test-results/bun
-          bun test tests/bun/api/api-endpoints.test.ts > test-results/bun/test-results.txt
-        env: # CORRECTED: Added the full environment configuration to this job as well.
-          # --- Private Configuration ---
-          DB_TYPE: 'mongodb'
-          DB_HOST: 'localhost'
-          DB_PORT: '27017'
-          DB_NAME: 'SveltyCMS'
-          DB_USER: 'admin'
-          DB_PASSWORD: 'admin'
-          DB_RETRY_DELAY: '1000'
-          DB_RETRY_ATTEMPTS: '3'
-          DB_POOL_SIZE: '5'
-          MULTI_TENANT: 'false'
-          SMTP_HOST: ''
-          SMTP_PORT: '587'
-          SMTP_EMAIL: ''
-          SMTP_PASSWORD: ''
-          SERVER_PORT: '4173'
-          USE_GOOGLE_OAUTH: 'true'
-          GOOGLE_CLIENT_ID: 'dummy-google-client-id-for-testing.apps.googleusercontent.com'
-          GOOGLE_CLIENT_SECRET: 'GOCSPX-dummy-google-client-secret-for-ci'
-          USE_REDIS: 'false'
-          REDIS_HOST: ''
-          REDIS_PORT: ''
-          REDIS_PASSWORD: ''
-          SESSION_CLEANUP_INTERVAL: '60000'
-          MAX_IN_MEMORY_SESSIONS: '1000'
-          DB_VALIDATION_PROBABILITY: '0.1'
-          SESSION_EXPIRATION_SECONDS: '86400'
-          USE_MAPBOX: 'false'
-          MAPBOX_API_TOKEN: ''
-          SECRET_MAPBOX_API_TOKEN: ''
-          GOOGLE_API_KEY: ''
-          TWITCH_TOKEN: ''
-          USE_TIKTOK: 'false'
-          TIKTOK_TOKEN: ''
-          LLM_APIS: '{}'
-          ROLES: '["admin", "editor"]'
-          PERMISSIONS: '["create", "read", "update", "delete"]'
-          JWT_SECRET_KEY: 'a-super-secret-jwt-key-for-github-actions-that-is-long-enough'
-          USE_2FA: 'false'
-          TWO_FACTOR_AUTH_SECRET: ''
-          TWO_FACTOR_AUTH_BACKUP_CODES_COUNT: '10'
-          # --- Public Configuration ---
-          HOST_DEV: 'http://localhost:5173'
-          HOST_PROD: 'http://localhost:4173'
-          SITE_NAME: 'SveltyCMS Test Site'
-          PASSWORD_LENGTH: '8'
-          DEFAULT_CONTENT_LANGUAGE: 'en'
-          AVAILABLE_CONTENT_LANGUAGES: '["en", "de", "es"]'
-          BASE_LOCALE: 'en'
-          LOCALES: '["en", "de"]'
-          MEDIA_FOLDER: 'ci-media-files'
-          MEDIA_OUTPUT_FORMAT_QUALITY: '{"format": "webp", "quality": 75}'
-          MEDIASERVER_URL: ''
-          IMAGE_SIZES: '{"thumbnail": 150, "card": 600}'
-          MAX_FILE_SIZE: '10485760'
-          BODY_SIZE_LIMIT: '104857600'
-          EXTRACT_DATA_PATH: ''
-          USE_ARCHIVE_ON_DELETE: 'true'
-          SEASONS: 'false'
-          SEASON_REGION: ''
-          PKG_VERSION: 'ci-test-version'
-          LOG_LEVELS: '["info", "error", "warn"]'
-          LOG_RETENTION_DAYS: '7'
-          LOG_ROTATION_SIZE: '5242880'
-          DEMO: 'true'
+          echo "=== Running main E2E suite ==="
+          # --grep-invert skips the setup wizard since we just ran it
+          bunx playwright test --project=chromium --reporter=list --grep-invert "setup-wizard"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@604373da6381bf24206979c74d06a550515601b9 # v4.6.0
         if: always()
         with:
-          name: bun-test-results
-          path: test-results/bun/
+          name: playwright-report
+          path: playwright-report/
           retention-days: 30

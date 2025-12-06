@@ -25,33 +25,36 @@
 </script>
 
 <script lang="ts">
-	import { onDestroy, onMount } from 'svelte';
-	import { Chart, LineController, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler } from 'chart.js';
+	import { CategoryScale, Chart, Filler, LinearScale, LineController, LineElement, PointElement, Tooltip } from 'chart.js';
 	import 'chartjs-adapter-date-fns';
-	Chart.register(LineController, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler);
+	import { onDestroy, onMount } from 'svelte';
 	import BaseWidget from '../BaseWidget.svelte';
+	import type { WidgetSize } from '@src/content/types';
 
-	let {
+	// Register Chart.js components
+	Chart.register(LineController, CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler);
+
+	const {
 		label = 'CPU Usage',
 		theme = 'light',
 		icon = 'mdi:cpu-64-bit',
 		widgetId = undefined,
-		size = { w: 1, h: 1 },
-		onSizeChange = (newSize: { w: number; h: number }) => {},
-		onCloseRequest = () => {}
-	} = $props<{
+		size = { w: 1, h: 1 } as WidgetSize,
+		onSizeChange = (_newSize: WidgetSize) => {},
+		onRemove = () => {}
+	}: {
 		label?: string;
 		theme?: 'light' | 'dark';
 		icon?: string;
 		widgetId?: string;
-		size?: { w: number; h: number };
-		onSizeChange?: (newSize: { w: number; h: number }) => void;
-		onCloseRequest?: () => void;
-	}>();
+		size?: WidgetSize;
+		onSizeChange?: (newSize: WidgetSize) => void;
+		onRemove?: () => void;
+	} = $props();
 
-	let currentData = $state<any>(undefined);
-	let chartInstance = $state<Chart | undefined>(undefined);
-	let chartCanvasElement = $state<HTMLCanvasElement | undefined>(undefined);
+	let currentData: any = $state(undefined);
+	let chartInstance: Chart | undefined = $state(undefined);
+	let chartCanvasElement: HTMLCanvasElement | undefined = $state(undefined);
 
 	function updateChart(fetchedData: any) {
 		if (!chartCanvasElement) return;
@@ -86,13 +89,24 @@
 			chartInstance.data.datasets[0].data = plainCpuUsageHistory;
 			chartInstance.data.datasets[0].borderColor = theme === 'dark' ? 'rgba(99, 102, 241, 1)' : 'rgba(59, 130, 246, 1)';
 			chartInstance.data.datasets[0].backgroundColor = theme === 'dark' ? 'rgba(99, 102, 241, 0.1)' : 'rgba(59, 130, 246, 0.1)';
-			chartInstance.options.scales.x.ticks.color = theme === 'dark' ? '#9ca3af' : '#6b7280';
-			chartInstance.options.scales.y.ticks.color = theme === 'dark' ? '#9ca3af' : '#6b7280';
-			chartInstance.options.scales.x.grid.color = theme === 'dark' ? 'rgba(156, 163, 175, 0.1)' : 'rgba(107, 114, 128, 0.1)';
-			chartInstance.options.scales.y.grid.color = theme === 'dark' ? 'rgba(156, 163, 175, 0.1)' : 'rgba(107, 114, 128, 0.1)';
-			chartInstance.options.scales.x.ticks.font = { size: fontSize };
-			chartInstance.options.scales.y.ticks.font = { size: fontSize };
-			chartInstance.options.scales.x.ticks.maxTicksLimit = maxTicks;
+
+			// Safely update chart options with null checks
+			if (chartInstance.options.scales?.x?.ticks) {
+				chartInstance.options.scales.x.ticks.color = theme === 'dark' ? '#9ca3af' : '#6b7280';
+				chartInstance.options.scales.x.ticks.font = { size: fontSize };
+				chartInstance.options.scales.x.ticks.maxTicksLimit = maxTicks;
+			}
+			if (chartInstance.options.scales?.y?.ticks) {
+				chartInstance.options.scales.y.ticks.color = theme === 'dark' ? '#9ca3af' : '#6b7280';
+				chartInstance.options.scales.y.ticks.font = { size: fontSize };
+			}
+			if (chartInstance.options.scales?.x?.grid) {
+				chartInstance.options.scales.x.grid.color = theme === 'dark' ? 'rgba(156, 163, 175, 0.1)' : 'rgba(107, 114, 128, 0.1)';
+			}
+			if (chartInstance.options.scales?.y?.grid) {
+				chartInstance.options.scales.y.grid.color = theme === 'dark' ? 'rgba(156, 163, 175, 0.1)' : 'rgba(107, 114, 128, 0.1)';
+			}
+
 			chartInstance.update('none');
 		} else {
 			const existingChart = Chart.getChart(chartCanvasElement);
@@ -190,7 +204,7 @@
 		}
 	}
 
-	function updateChartAction(canvas: HTMLCanvasElement, data: any) {
+	function updateChartAction(_canvas: HTMLCanvasElement, data: any) {
 		currentData = data;
 		return {
 			update(newData: any) {
@@ -240,13 +254,13 @@
 	{widgetId}
 	{size}
 	{onSizeChange}
-	{onCloseRequest}
+	onCloseRequest={onRemove}
 >
 	{#snippet children({ data: fetchedData })}
 		{#if fetchedData?.cpuInfo}
-			{@const currentUsage = fetchedData?.cpuInfo?.historicalLoad?.usage?.slice(-1)[0] || 0}
+			{@const currentUsage = Number(fetchedData?.cpuInfo?.historicalLoad?.usage?.slice(-1)[0] || 0)}
 			{@const usageArray = fetchedData?.cpuInfo?.historicalLoad?.usage || []}
-			{@const averageUsage = usageArray.length > 0 ? usageArray.reduce((a, b) => a + b, 0) / usageArray.length : 0}
+			{@const averageUsage = usageArray.length > 0 ? Number(usageArray.reduce((a: number, b: number) => a + b, 0) / usageArray.length) : 0}
 			{@const usageLevel = currentUsage > 80 ? 'high' : currentUsage > 50 ? 'medium' : 'low'}
 			<div class="flex h-full flex-col space-y-3">
 				<div class="flex items-center justify-between">

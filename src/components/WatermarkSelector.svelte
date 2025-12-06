@@ -23,7 +23,7 @@ Usage:
 		onSelect: (media: MediaType) => void;
 	}
 
-	let { mediaItems = [], selectedMedia = null, onSelect }: Props = $props();
+	const { mediaItems = [], selectedMedia = null, onSelect }: Props = $props();
 
 	// Handle selection of a media item
 	function handleSelect(media: MediaType) {
@@ -40,7 +40,7 @@ Usage:
 </script>
 
 <div class="grid grid-cols-3 gap-4" role="radiogroup" aria-label="Watermark image selection">
-	{#each mediaItems as media, index}
+	{#each mediaItems as media, index (media._id)}
 		<button
 			type="button"
 			class="cursor-pointer overflow-hidden rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50"
@@ -52,7 +52,7 @@ Usage:
 		>
 			<img
 				src={media.url}
-				alt={media.name}
+				alt={media.filename}
 				class="h-auto w-full border-2 transition-all duration-300 {media === selectedMedia
 					? 'scale-95 border-blue-500'
 					: 'border-transparent hover:border-gray-300'}"

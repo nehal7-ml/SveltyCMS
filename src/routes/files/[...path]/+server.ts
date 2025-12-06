@@ -1,115 +1,116 @@
 /**
  * @file src/routes/files/[...path]/+server.ts
- * @description Serves media files from the mediaFiles directory
+ * @description Serves media files via Streams (Non-blocking) or redirects to cloud storage.
+ *
+ * Improvements:
+ * - **Streaming:** Uses `createReadStream` to serve files with near-zero memory footprint.
+ * - **Async I/O:** Uses `fs.promises` to prevent blocking the Node.js event loop.
+ * - **304 Not Modified:** Handles browser caching headers to save bandwidth.
+ * - **Error Handling:** Handles 'ENOENT' specifically for cleaner 404s.
  */
 
-import { error } from '@sveltejs/kit';
-import { readFileSync, existsSync, statSync } from 'fs';
-import { join } from 'path';
+import { error, redirect } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { publicEnv } from '@root/config/public';
-import { logger } from '@utils/logger.svelte';
+import { getPublicSettingSync } from '@src/services/settingsService';
+import { logger } from '@utils/logger.server';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import path from 'node:path';
+import { Readable } from 'node:stream';
+import { lookup } from 'mime-types';
 
-export const GET: RequestHandler = async ({ params }) => {
+export const GET: RequestHandler = async ({ params, request }) => {
 	try {
 		const filePath = params.path;
 
 		if (!filePath) {
-			logger.warn('File path not provided');
-			throw error(400, 'File path required');
+			logger.warn('File request missing path');
+			throw error(400, 'File path is required');
 		}
 
-		// Construct the full path to the media file
-		const mediaFolderPath = publicEnv.MEDIA_FOLDER || 'mediaFiles';
-		const fullPath = join(process.cwd(), mediaFolderPath, filePath);
+		// Check storage type
+		const storageType = getPublicSettingSync('MEDIA_STORAGE_TYPE');
 
-		// Security check: ensure the file is within the media folder
-		const normalizedMediaPath = join(process.cwd(), mediaFolderPath);
-		if (!fullPath.startsWith(normalizedMediaPath)) {
-			logger.warn('Attempted directory traversal attack', { filePath, fullPath });
+		// --- CLOUD STORAGE REDIRECT ---
+		if (storageType !== 'local') {
+			const cloudUrl = getPublicSettingSync('MEDIA_CLOUD_PUBLIC_URL') || getPublicSettingSync('MEDIASERVER_URL');
+
+			if (cloudUrl) {
+				const mediaFolder = getPublicSettingSync('MEDIA_FOLDER') || '';
+				const normalizedFolder = mediaFolder.replace(/^\.\//, '').replace(/^\/+/, '').replace(/\/+$/, '');
+				const baseUrl = cloudUrl.replace(/\/+$/, '');
+				const fullUrl = normalizedFolder ? `${baseUrl}/${normalizedFolder}/${filePath}` : `${baseUrl}/${filePath}`;
+
+				logger.debug('Redirecting to cloud storage', { filePath, cloudUrl: fullUrl });
+				throw redirect(307, fullUrl);
+			} else {
+				logger.error('Cloud storage configured but no public URL available', { storageType });
+				throw error(500, 'Cloud storage URL not configured');
+			}
+		}
+
+		// --- LOCAL STORAGE SERVING ---
+		const mediaFolder = getPublicSettingSync('MEDIA_FOLDER');
+		if (!mediaFolder) {
+			logger.error('MEDIA_FOLDER not configured');
+			throw error(500, 'Media storage not configured');
+		}
+
+		const normalizedMediaFolder = mediaFolder.replace(/^\.\//, '').replace(/^\/+/, '');
+		const fullPath = path.join(process.cwd(), normalizedMediaFolder, filePath);
+
+		// Security: Directory Traversal Prevention
+		const resolvedPath = path.resolve(fullPath);
+		const allowedBasePath = path.resolve(process.cwd(), normalizedMediaFolder);
+
+		if (!resolvedPath.startsWith(allowedBasePath)) {
+			logger.warn('Directory traversal attempt detected', { requestedPath: filePath, resolvedPath });
 			throw error(403, 'Access denied');
 		}
 
-		// Check if file exists
-		if (!existsSync(fullPath)) {
-			logger.debug('File not found', { filePath, fullPath });
-			throw error(404, 'File not found');
-		}
+		// Async Stat check (Non-blocking)
+		const stats = await stat(resolvedPath);
 
-		// Get file stats
-		const stats = statSync(fullPath);
 		if (!stats.isFile()) {
-			logger.warn('Requested path is not a file', { filePath, fullPath });
-			throw error(404, 'Not a file');
+			throw error(400, 'Invalid file request');
 		}
 
-		// Read the file
-		const fileBuffer = readFileSync(fullPath);
-
-		// Determine MIME type based on file extension
-		const ext = filePath.split('.').pop()?.toLowerCase();
-		let contentType = 'application/octet-stream';
-
-		switch (ext) {
-			case 'jpg':
-			case 'jpeg':
-				contentType = 'image/jpeg';
-				break;
-			case 'png':
-				contentType = 'image/png';
-				break;
-			case 'gif':
-				contentType = 'image/gif';
-				break;
-			case 'webp':
-				contentType = 'image/webp';
-				break;
-			case 'avif':
-				contentType = 'image/avif';
-				break;
-			case 'svg':
-				contentType = 'image/svg+xml';
-				break;
-			case 'pdf':
-				contentType = 'application/pdf';
-				break;
-			case 'mp4':
-				contentType = 'video/mp4';
-				break;
-			case 'mp3':
-				contentType = 'audio/mpeg';
-				break;
-			case 'wav':
-				contentType = 'audio/wav';
-				break;
-			default:
-				contentType = 'application/octet-stream';
+		// Browser Cache Optimization (304 Not Modified)
+		const lastModified = stats.mtime.toUTCString();
+		if (request.headers.get('if-modified-since') === lastModified) {
+			return new Response(null, { status: 304 });
 		}
 
-		logger.debug('Serving media file', {
-			filePath,
-			contentType,
-			fileSize: stats.size
-		});
+		// MIME Type
+		const mimeType = lookup(resolvedPath) || 'application/octet-stream';
 
-		return new Response(fileBuffer, {
+		// STREAMING RESPONSE (Memory Efficient)
+		// We convert the Node stream to a Web ReadableStream for SvelteKit
+		const nodeStream = createReadStream(resolvedPath);
+		const stream = Readable.toWeb(nodeStream);
+
+		return new Response(stream as any, {
+			status: 200,
 			headers: {
-				'Content-Type': contentType,
+				'Content-Type': mimeType,
 				'Content-Length': stats.size.toString(),
-				'Cache-Control': 'public, max-age=31536000', // Cache for 1 year
-				ETag: `"${stats.mtime.getTime()}-${stats.size}"`
+				'Cache-Control': 'public, max-age=31536000, immutable',
+				'Last-Modified': lastModified
 			}
 		});
-	} catch (err) {
+	} catch (err: any) {
+		// Handle Redirects (SvelteKit flow control)
 		if (err && typeof err === 'object' && 'status' in err) {
-			// Re-throw SvelteKit errors
 			throw err;
 		}
 
-		logger.error('Error serving media file', {
-			path: params.path,
-			error: err instanceof Error ? err.message : String(err)
-		});
-		throw error(500, 'Internal server error');
+		// Handle File Not Found specifically
+		if (err.code === 'ENOENT') {
+			logger.debug('File not found', { path: params.path });
+			throw error(404, 'File not found');
+		}
+
+		logger.error('Error serving file', { error: err, path: params.path });
+		throw error(500, 'Failed to serve file');
 	}
 };

@@ -11,7 +11,6 @@ Features:
 <script lang="ts">
 	// Components
 	import PermissionsSetting from '@components/PermissionsSetting.svelte';
-
 	// Skeleton Stores
 	import { getModalStore } from '@skeletonlabs/skeleton';
 	import { targetWidget } from '@src/stores/collectionStore.svelte';
@@ -19,15 +18,15 @@ Features:
 	const modalStore = getModalStore();
 
 	// Function to handle permission updates
-	function handlePermissionUpdate(event: CustomEvent) {
-		targetWidget.update((w) => {
-			w.permissions = event.detail;
-			return w;
-		});
+	function handlePermissionUpdate(updatedPermissions: Record<string, Record<string, boolean>>) {
+		const w = targetWidget.value;
+		if (!w) return;
+		w.permissions = updatedPermissions;
+		targetWidget.value = w;
 	}
 
 	// Get roles from the modal store
-	let roles = $derived($modalStore[0]?.value?.roles || []);
+	const roles = $derived($modalStore[0]?.value?.roles || []);
 </script>
 
 {#if $modalStore[0]}

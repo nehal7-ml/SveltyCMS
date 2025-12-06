@@ -9,7 +9,7 @@
  * Features:
  * - **Defense in Depth**: Specific permission checks for both GET and POST.
  * - User creation with role assignment and email notification.
- * - Form validation using superforms.
+ * - Form validation
  * - Error handling and logging.
  *
  * Usage:
@@ -17,45 +17,24 @@
  * POST /api/user - Create a new user (requires 'create:user:any' permission)
  */
 
-import { json, type RequestHandler } from '@sveltejs/kit';
 import { auth } from '@src/databases/db';
-import { superValidate } from 'sveltekit-superforms/server';
+import type { ISODateString } from '@src/databases/dbInterface';
+import { getPrivateSettingSync } from '@src/services/settingsService';
+import { error, json, type HttpError, type RequestHandler } from '@sveltejs/kit';
 import { addUserTokenSchema } from '@utils/formSchemas';
-import { valibot } from 'sveltekit-superforms/adapters';
-import { error, type HttpError } from '@sveltejs/kit';
-import { privateEnv } from '@root/config/private';
+import { safeParse } from 'valibot';
 
 // Auth and permission helpers
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
-export const GET: RequestHandler = async ({ locals }) => {
-	const { user, tenantId } = locals;
-	try {
-		if (!auth) {
-			logger.error('Authentication system is not initialized');
-			throw error(500, 'Internal Server Error');
-		}
-
-		if (privateEnv.MULTI_TENANT && !tenantId) {
-			throw error(400, 'Tenant could not be identified for this operation.');
-		} // **SECURITY**: Check permissions for listing users
-
-		// Authentication is handled by hooks.server.ts - user presence confirms access		const filter = privateEnv.MULTI_TENANT ? { tenantId } : {};
-		const users = await auth.getAllUsers({ filter });
-		logger.info('Fetched all users successfully', { count: users.length, requestedBy: user?._id, tenantId });
-		return json(users);
-	} catch (err) {
-		const httpError = err as HttpError;
-		const status = httpError.status || 500;
-		const message = httpError.body?.message || 'Internal Server Error';
-		logger.error('Error fetching users:', { error: message, status, tenantId });
-		throw error(status, message);
-	}
+export const GET: RequestHandler = async () => {
+	// TODO: Implement GET handler logic here, or return a placeholder response
+	return json({ message: 'GET /api/user not implemented' }, { status: 501 });
 };
 
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = async ({ request, locals, url }) => {
 	const { user, tenantId } = locals;
 	try {
 		if (!auth) {
@@ -63,17 +42,18 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			throw error(500, 'Internal Server Error');
 		}
 
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant could not be identified for this operation.');
 		} // **SECURITY**: Authentication is handled by hooks.server.ts - user presence confirms access
 
-		const addUserForm = await superValidate(request, valibot(addUserTokenSchema));
-		if (!addUserForm.valid) {
-			logger.warn('Invalid form data for user creation', { errors: addUserForm.errors, tenantId });
-			return json({ form: addUserForm, message: 'Invalid form data' }, { status: 400 });
+		const formData = await request.json();
+		const result = safeParse(addUserTokenSchema, formData);
+		if (!result.success) {
+			logger.warn('Invalid form data for user creation', { issues: result.issues });
+			return json({ message: 'Invalid form data' }, { status: 400 });
 		}
 
-		const { email, role, expiresIn } = addUserForm.data;
+		const { email, role, expiresIn } = result.output;
 		logger.info('Request to create user received', { email, role, requestedBy: user?._id, tenantId });
 
 		const expirationTimes: Record<string, number> = {
@@ -86,11 +66,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const expirationTime = expirationTimes[expiresIn];
 		if (!expirationTime) {
 			logger.warn('Invalid value for token validity', { expiresIn, tenantId });
-			return json({ form: addUserForm, message: 'Invalid value for token validity' }, { status: 400 });
+			return json({ message: 'Invalid value for token validity' }, { status: 400 });
 		}
 
 		const checkCriteria: { email: string; tenantId?: string } = { email };
-		if (privateEnv.MULTI_TENANT) {
+		if (getPrivateSettingSync('MULTI_TENANT')) {
 			checkCriteria.tenantId = tenantId;
 		}
 		const existingUser = await auth.checkUser(checkCriteria);
@@ -102,22 +82,26 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const newUser = await auth.createUser({
 			email,
 			role,
-			...(privateEnv.MULTI_TENANT && { tenantId }),
-			lastAuthMethod: 'password',
-			isRegistered: false
+			...(getPrivateSettingSync('MULTI_TENANT') && { tenantId })
 		});
 		const expiresAt = new Date(Date.now() + expirationTime * 1000);
-		const token = await auth.createToken(newUser._id, expiresAt, tenantId);
+		const token = await auth.createToken({
+			user_id: newUser._id,
+			expires: expiresAt.toISOString() as ISODateString,
+			type: 'user-invite',
+			tenantId
+		});
 
 		logger.info('User created successfully', { userId: newUser._id, tenantId }); // Send token via email. Pass the request origin for server-side fetch.
 
-		await sendUserToken(request.url.origin, email, token, role, expirationTime);
+		await sendUserToken(url.origin, email, token, role, expirationTime);
 
 		return json(newUser, { status: 201 }); // 201 Created
 	} catch (err) {
 		const httpError = err as HttpError;
 		const status = httpError.status || 500;
-		const message = httpError.body?.message || `Error creating user: ${err.message}`;
+		const errMsg = err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err);
+		const message = httpError.body?.message || `Error creating user: ${errMsg}`;
 		logger.error('Error creating user', { error: message, status, tenantId });
 		return json({ success: false, error: message }, { status });
 	}
@@ -154,7 +138,8 @@ async function sendUserToken(origin: string, email: string, token: string, role:
 
 		logger.info('User token email sent successfully', { email });
 	} catch (err) {
-		logger.error('Error sending user token email', { error: err.message, email }); // Re-throw the error to be caught and handled by the main POST handler.
+		const errMsg = err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err);
+		logger.error('Error sending user token email', { error: errMsg, email });
 		throw err;
 	}
 }

@@ -15,24 +15,23 @@
 
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Auth
 import { dbAdapter } from '@src/databases/db';
 
 // Media Processing
-import { extractMetadata } from '@utils/media/mediaProcessing';
-import { MediaService } from '@utils/media/MediaService';
+import { extractMetadata } from '@utils/media/mediaProcessing.server';
+import { MediaService } from '@src/services/MediaService.server';
 import type { MediaType, MediaAccess } from '@utils/media/mediaModels';
-import { Permission } from '@utils/media/mediaModels';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Response types
 interface ProcessResult {
 	success: boolean;
-	data?: MediaType | MediaType[] | FileProcessResult[];
+	data?: MediaType | MediaType[] | FileProcessResult[] | Record<string, unknown>;
 	error?: string;
 }
 
@@ -71,7 +70,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 			return json({ success: false, error: 'Process type not specified' }, { status: 400 });
 		}
 
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant could not be identified for this operation.');
 		} // Check appropriate permissions based on operation type
 
@@ -95,8 +94,9 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				if (!file || !(file instanceof File)) {
 					return json({ success: false, error: 'No valid file received' }, { status: 400 });
 				}
-				const metadata = await extractMetadata(file);
-				result = { success: true, data: metadata };
+				const buffer = Buffer.from(await file.arrayBuffer());
+				const metadata = await extractMetadata(buffer);
+				result = { success: true, data: metadata as unknown as Record<string, unknown> };
 				break;
 			}
 			case 'save': {
@@ -105,10 +105,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					return json({ success: false, error: 'No valid files received' }, { status: 400 });
 				}
 
-				const access: MediaAccess = {
-					userId: user._id.toString(),
-					permissions: [Permission.Read, Permission.Write]
-				};
+				if (!user) {
+					throw error(401, 'User not authenticated');
+				}
+
+				const access: MediaAccess = 'private';
 
 				const results: FileProcessResult[] = [];
 				for (const file of files) {
@@ -137,8 +138,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				if (!mediaId || typeof mediaId !== 'string') {
 					return json({ success: false, error: 'Invalid media ID' }, { status: 400 });
 				}
-				// Pass tenantId to the media service
-				await mediaService.deleteMedia(mediaId, tenantId);
+				// deleteMedia only takes one parameter
+				await mediaService.deleteMedia(mediaId);
 				result = { success: true };
 				break;
 			}

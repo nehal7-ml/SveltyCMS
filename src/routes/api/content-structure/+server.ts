@@ -11,9 +11,9 @@
  * Handles creation, updates (including reordering and parent changes), and deletion of content nodes.
  * Utilizes Redis caching for performance, now tenant-aware.
  */
-import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { browser } from '$app/environment';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
+import { error, json, type RequestHandler } from '@sveltejs/kit';
 
 import type { ContentNodeOperation } from '@root/src/content/types';
 
@@ -22,10 +22,10 @@ import { contentManager } from '@src/content/ContentManager';
 import { dbAdapter } from '@src/databases/db';
 
 // Redis
-import { isRedisEnabled, getCache, setCache, clearCache } from '@src/databases/redis';
+import { cacheService } from '@src/databases/CacheService';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 const CACHE_TTL = 300; // 5 minutes
 
@@ -38,16 +38,16 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	}
 
 	try {
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant ID is required for this operation.');
 		}
 
 		const action = url.searchParams.get('action');
 		logger.debug('GET request received', { action, tenantId }); // Try to get from Redis cache first
 
-		if (!browser && isRedisEnabled()) {
+		if (!browser) {
 			const cacheKey = `api:content-structure:${tenantId || 'global'}:${action || 'default'}`;
-			const cached = await getCache(cacheKey);
+			const cached = await cacheService.get(cacheKey);
 			if (cached) {
 				logger.debug('Returning cached data from Redis', { action, tenantId });
 				return json(cached);
@@ -59,15 +59,17 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 		switch (action) {
 			case 'getStructure': {
 				// Return full structure with metadata
-				const { contentStructure: contentNodes } = await contentManager.getCollectionData(tenantId);
+				const contentNodes = await contentManager.getContentStructure();
+				const version = contentManager.getContentVersion();
 
 				response = {
-					contentStructure: contentNodes
+					contentStructure: contentNodes,
+					version
 				}; // Cache the response if Redis is enabled
 
-				if (!browser && isRedisEnabled()) {
+				if (!browser) {
 					const cacheKey = `api:content-structure:${tenantId || 'global'}:${action}`;
-					await setCache(cacheKey, response, CACHE_TTL);
+					await cacheService.set(cacheKey, response, CACHE_TTL);
 				}
 
 				return json({ data: response });
@@ -75,11 +77,13 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 
 			case 'getContentStructure': {
 				// Return content nodes from database
-				const { contentStructure } = await contentManager.getCollectionData(tenantId);
+				const contentStructure = await contentManager.getContentStructure();
+				const version = contentManager.getContentVersion();
 				logger.info('Returning content structure from database', { tenantId });
 				response = {
 					success: true,
-					contentNodes: contentStructure
+					contentNodes: contentStructure,
+					version
 				};
 				break; // Continue to caching and return
 			}
@@ -88,9 +92,9 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 				throw error(400, 'Invalid action');
 		} // Cache in Redis if available
 
-		if (!browser && isRedisEnabled()) {
+		if (!browser) {
 			const cacheKey = `api:content-structure:${tenantId || 'global'}:${action || 'default'}`;
-			await setCache(cacheKey, response, CACHE_TTL);
+			await cacheService.set(cacheKey, response, CACHE_TTL);
 		}
 		return json(response);
 	} catch (err) {
@@ -109,7 +113,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 
 	try {
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant ID is required for this operation.');
 		}
 
@@ -125,11 +129,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 					throw error(400, 'Items array is required for updateContentStructure');
 				}
 
-				const updatedContentStructure = await contentManager.upsertContentNodes(items, tenantId);
+				const updatedContentStructure = await contentManager.upsertContentNodes(items);
 
-				if (!browser && isRedisEnabled()) {
+				if (!browser) {
 					const cachePattern = `api:content-structure:${tenantId || 'global'}:*`;
-					await clearCache(cachePattern);
+					await cacheService.clearByPattern(cachePattern);
 					logger.debug('Cleared content-structure cache after update.', { tenantId });
 				}
 
@@ -141,17 +145,35 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				});
 			}
 			case 'recompile': {
-				if (!browser && isRedisEnabled()) {
+				if (!browser) {
 					const cachePattern = `api:content-structure:${tenantId || 'global'}:*`;
-					await clearCache(cachePattern);
+					await cacheService.clearByPattern(cachePattern);
 					logger.debug('Cleared all content-structure related caches.', { tenantId });
 				}
 
-				await contentManager.updateCollections(true, tenantId);
+				await contentManager.refresh(tenantId);
 				logger.info('Collections recompiled successfully', { tenantId });
 				return json({
 					success: true,
 					message: 'Collections recompiled successfully'
+				});
+			}
+			case 'refreshCollections': {
+				// Refresh collections from compiled files without recompiling
+				if (!browser) {
+					const cachePattern = `api:content-structure:${tenantId || 'global'}:*`;
+					await cacheService.clearByPattern(cachePattern);
+					logger.debug('Cleared content-structure caches for refresh.', { tenantId });
+				}
+
+				await contentManager.refresh(tenantId);
+				const contentStructure = await contentManager.getContentStructure();
+
+				logger.info('Collections refreshed from compiled files', { tenantId, collectionsFound: contentStructure?.length || 0 });
+				return json({
+					success: true,
+					contentNodes: contentStructure,
+					message: 'Collections refreshed successfully'
 				});
 			}
 			default:
@@ -173,7 +195,7 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 	}
 
 	try {
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant ID is required for this operation.');
 		}
 
@@ -183,24 +205,33 @@ export const PUT: RequestHandler = async ({ request, locals }) => {
 			throw error(400, '_id and updates are required');
 		}
 
-		const updatedNode = await dbAdapter.updateContentStructure(_id, updates, tenantId);
-		if (!updatedNode) throw error(404, 'Node not found'); // Invalidate cache after a single node update
+		if (!dbAdapter) {
+			throw error(503, 'Database adapter not available');
+		}
 
-		if (!browser && isRedisEnabled()) {
+		const updateResult = await dbAdapter.content.nodes.update(_id, updates);
+		if (!updateResult.success || !updateResult.data) {
+			throw error(404, 'Node not found');
+		}
+
+		const updatedNode = updateResult.data;
+
+		// Invalidate cache after a single node update
+		if (!browser) {
 			const cachePattern = `api:content-structure:${tenantId || 'global'}:*`;
-			await clearCache(cachePattern);
+			await cacheService.clearByPattern(cachePattern);
 			logger.debug(`Cleared content-structure cache after PUT update for node ${_id}.`, { tenantId });
 		}
 
-		await contentManager.updateCollections(true, tenantId);
-		logger.info(`Content node \x1b[34m${_id}\x1b[0m updated successfully`, { tenantId });
+		await contentManager.refresh(tenantId);
+		logger.info(`Content node ${_id} updated successfully`, { tenantId });
 		return json({
 			success: true,
 			message: 'Content Structure updated successfully',
 			data: updatedNode
 		});
-	} catch (error) {
-		const errorMessage = error instanceof Error ? error.message : String(error);
+	} catch (err) {
+		const errorMessage = err instanceof Error ? err.message : String(err);
 		logger.error('Error in PUT /api/content-structure:', errorMessage);
 		throw error(500, `Failed to update content structure: ${errorMessage}`);
 	}

@@ -5,8 +5,8 @@
 
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { logger } from '@utils/logger.svelte';
-import { getDefaultTwoFactorAuthService } from '@auth/twoFactorAuth';
+import { logger } from '@utils/logger.server';
+import { getDefaultTwoFactorAuthService } from '@src/databases/auth/twoFactorAuth';
 import { auth } from '@databases/db';
 import { object, string, array, parse } from 'valibot';
 
@@ -42,7 +42,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const validatedBody = parse(verifySetupSchema, body);
 
 		// Complete 2FA setup
-		const twoFactorService = getDefaultTwoFactorAuthService(auth);
+		if (!auth) {
+			logger.error('Auth service not initialized during 2FA setup verification');
+			throw error(500, 'Auth service not available');
+		}
+		const twoFactorService = getDefaultTwoFactorAuthService(auth.authInterface);
 		const success = await twoFactorService.complete2FASetup(
 			user._id,
 			validatedBody.secret,

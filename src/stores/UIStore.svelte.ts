@@ -3,19 +3,18 @@
  * @description Manages the UI element visibility states
  *
  * Features:
- * - UI element visibility management with Svelte stores
+ * - UI element visibility management
  * - Responsive layout updates based on screen size and collection mode
  * - Lazy initialization and cleanup
  * - Debug logging for state changes
  */
 
 // Stores
-import { store } from '@utils/reactivity.svelte';
 import { mode } from './collectionStore.svelte';
 import { screenSize, ScreenSize } from './screenSizeStore.svelte';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger';
 
 // Types for UI visibility states
 export type UIVisibility = 'hidden' | 'collapsed' | 'full';
@@ -37,15 +36,55 @@ const createUIStores = () => {
 	let screenSizeUnsubscribe: (() => void) | null = null;
 	const initialSize = screenSize.value;
 
+	let routeContext = $state({ isImageEditor: false, isCollectionBuilder: false });
+
+	function setRouteContext(context: { isImageEditor?: boolean; isCollectionBuilder?: boolean }) {
+		const newContext = { ...routeContext, ...context };
+		if (JSON.stringify(routeContext) !== JSON.stringify(newContext)) {
+			routeContext = newContext;
+			logger.debug('UIStore: Route context updated', newContext);
+			updateLayout();
+		}
+	}
+
 	// Tailored default state based on screen size and mode
+	// Note: Feature routes (e.g., Image Editor) explicitly override header/footer states locally.
 	const getDefaultState = (size: ScreenSize, isViewMode: boolean): UIState => {
-		// Mobile behavior (<768px) - Always hide sidebar on mobile to show FloatingNav
+		// Tailored default state for the image editor route
+		if (routeContext.isImageEditor) {
+			return {
+				leftSidebar: 'collapsed',
+				rightSidebar: 'hidden',
+				pageheader: 'full',
+				pagefooter: 'full',
+				header: 'hidden',
+				footer: 'hidden'
+			};
+		}
+
+		// Tailored default state for the collection builder route
+		if (routeContext.isCollectionBuilder) {
+			return {
+				leftSidebar: 'collapsed',
+				rightSidebar: 'hidden',
+				pageheader: 'full',
+				pagefooter: 'hidden',
+				header: 'hidden',
+				footer: 'hidden'
+			};
+		}
+
+		// Determine if we should show the collection header (HeaderEdit)
+		// Show in edit, create, modify, media modes (exclude view as EntryList has its own header)
+		const isCollectionMode = ['edit', 'create', 'modify', 'media'].includes(mode.value);
+
+		// Mobile behavior (<768px) - Always hide sidebars; keep page header/footer hidden by default
 		if (size === ScreenSize.XS || size === ScreenSize.SM) {
 			return {
 				leftSidebar: 'hidden', // ALWAYS hidden on mobile regardless of mode
 				rightSidebar: 'hidden',
-				pageheader: isViewMode ? 'hidden' : 'full',
-				pagefooter: isViewMode ? 'hidden' : 'full', // Show pagefooter on mobile when editing (Fields.svelte needs it)
+				pageheader: isCollectionMode ? 'full' : 'hidden',
+				pagefooter: 'hidden',
 				header: 'hidden',
 				footer: 'hidden'
 			};
@@ -56,8 +95,8 @@ const createUIStores = () => {
 			return {
 				leftSidebar: isViewMode ? 'collapsed' : 'hidden',
 				rightSidebar: 'hidden',
-				pageheader: isViewMode ? 'hidden' : 'full',
-				pagefooter: isViewMode ? 'hidden' : 'full', // Show pagefooter on tablet when editing too
+				pageheader: isCollectionMode ? 'full' : 'hidden',
+				pagefooter: 'hidden',
 				header: 'hidden',
 				footer: 'hidden'
 			};
@@ -67,63 +106,75 @@ const createUIStores = () => {
 		return {
 			leftSidebar: isViewMode ? 'full' : 'collapsed',
 			rightSidebar: isViewMode ? 'hidden' : 'full',
-			pageheader: isViewMode ? 'hidden' : 'full',
-			pagefooter: isViewMode ? 'hidden' : 'hidden', // Hide on desktop edit mode since RightSidebar shows detailed info
+			pageheader: isCollectionMode ? 'full' : 'hidden',
+			pagefooter: 'hidden',
 			header: 'hidden',
 			footer: 'hidden'
 		};
 	};
 
-	// Base stores with initial states
-	const uiState = store<UIState>(getDefaultState(initialSize, mode.value === 'view' || mode.value === 'media'));
-	const userPreferred = store<UIVisibility>('collapsed');
-	const isInitialized = store(false);
+	// Base state with Svelte 5 runes
+	const initialMode = mode.value;
+	const initialIsViewMode = initialMode === 'view' || initialMode === 'media';
+	logger.debug('UIStore: Initializing with mode', { initialMode, initialIsViewMode, initialSize });
 
-	// Visibility stores (derived)
-	const visibilityStores = {
-		isLeftSidebarVisible: store(() => uiState.value.leftSidebar !== 'hidden'),
-		isRightSidebarVisible: store(() => uiState.value.rightSidebar !== 'hidden'),
-		isPageHeaderVisible: store(() => uiState.value.pageheader !== 'hidden'),
-		isPageFooterVisible: store(() => uiState.value.pagefooter !== 'hidden'),
-		isHeaderVisible: store(() => uiState.value.header !== 'hidden'),
-		isFooterVisible: store(() => uiState.value.footer !== 'hidden')
-	};
+	let uiState = $state<UIState>(getDefaultState(initialSize, initialIsViewMode));
+	let userPreferred = $state<UIVisibility>('collapsed');
+	let isInitialized = $state(false);
 
 	// Batch update helper
 	const batchUpdate = (newState: Partial<UIState>) => {
-		uiState.update((current) => ({ ...current, ...newState }));
+		uiState = { ...uiState, ...newState };
 	};
 
 	// Optimized layout handler with immediate response and smart diffing
-	const isUpdating = store(false);
-	let lastMode = mode.value; // Track last mode value
+	let isUpdating = $state(false);
+
+	// Prevent updateLayout from overriding recent manual sidebar toggles (layout resize triggers)
+	let manualOverrideUntil = 0;
 
 	function updateLayout() {
-		if (isUpdating.value) return;
-		isUpdating.value = true;
+		if (isUpdating) return;
+		isUpdating = true;
 
 		try {
 			const currentSize = screenSize.value;
-			// Use lastMode instead of reading mode.value directly
-			const isViewMode = lastMode === 'view' || lastMode === 'media';
+			// Read mode.value to get the actual mode string
+			const isViewMode = mode.value === 'view' || mode.value === 'media';
 			const newState = getDefaultState(currentSize, isViewMode);
 
+			// logger.debug('UIStore: updateLayout called', {
+			// 	currentSize,
+			// 	modeValue: mode.value,
+			// 	isViewMode,
+			// 	manualOverrideActive: Date.now() < manualOverrideUntil
+			// });
+
+			// If within manual override window, preserve current sidebar states
+			const now = Date.now();
+			const prevState = uiState;
+			if (now < manualOverrideUntil) {
+				logger.debug('UIStore: Manual override active, preserving sidebar states');
+				newState.leftSidebar = prevState.leftSidebar;
+				newState.rightSidebar = prevState.rightSidebar;
+			}
+
 			// Only update if state actually changes
-			const prevState = uiState.value;
 			const isDifferent = Object.keys(newState).some((key) => newState[key as keyof UIState] !== prevState[key as keyof UIState]);
+			// logger.debug('UIStore: State comparison', {
+			// 	prevState,
+			// 	newState,
+			// 	isDifferent
+			// });
+
 			if (isDifferent) {
 				requestAnimationFrame(() => {
-					uiState.set(newState);
-				});
-				logger.debug('UIStore: Layout update', {
-					screenSize: currentSize,
-					mode: lastMode,
-					newState,
-					windowWidth: window.innerWidth
+					uiState = newState;
+					logger.debug('UIStore: State updated', { newState });
 				});
 			}
 		} finally {
-			isUpdating.value = false;
+			isUpdating = false;
 		}
 	}
 
@@ -137,28 +188,22 @@ const createUIStores = () => {
 		}, 100);
 	}
 
-	// Set up mode change handler
-	const originalModeSet = mode.set;
-	mode.set = (newMode) => {
-		if (newMode === lastMode) return; // Skip if mode hasn't changed
-		lastMode = newMode; // Update lastMode
-		originalModeSet(newMode);
-		// Use requestAnimationFrame to batch updates
-		requestAnimationFrame(updateLayout);
-	};
-
 	// Initial layout update
 	updateLayout();
 
 	// Toggle individual UI element visibility
 	function toggleUIElement(element: keyof UIState, state: UIVisibility) {
 		batchUpdate({ [element]: state });
+		// Activate manual override briefly to avoid resize-driven resets
+		if (element === 'leftSidebar' || element === 'rightSidebar') {
+			manualOverrideUntil = Date.now() + 600; // ~0.6s window
+		}
 	}
 
 	// Lazy initialization
 	let initPromise: Promise<void> | null = null;
 	function initialize() {
-		if (isInitialized.value || typeof window === 'undefined') {
+		if (isInitialized || typeof window === 'undefined') {
 			return Promise.resolve();
 		}
 
@@ -169,7 +214,7 @@ const createUIStores = () => {
 
 					// Use both resize observer and window resize listener for better reliability
 					resizeObserver = new ResizeObserver(() => {
-						if (screenSize.value) {
+						if (screenSize) {
 							debouncedUpdateLayout();
 						}
 					});
@@ -178,11 +223,11 @@ const createUIStores = () => {
 
 					// Add direct resize listener as fallback
 					window.addEventListener('resize', debouncedUpdateLayout);
-					screenSizeUnsubscribe = screenSize.subscribe(updateLayout);
+					// Note: screenSize is a rune, so we use $effect for reactive updates instead of subscribe
 
 					updateLayout();
-					isInitialized.set(true);
-					logger.debug('UIStore: Initialized');
+					isInitialized = true;
+					logger.trace('UIStore: Initialized');
 					resolve();
 				};
 
@@ -216,40 +261,120 @@ const createUIStores = () => {
 			clearTimeout(resizeTimeout);
 			resizeTimeout = null;
 		}
+		// Clean up effect root if it exists
+		if (effectRoot) {
+			effectRoot();
+			effectRoot = undefined;
+		}
 		initPromise = null;
-		logger.debug('UIStore: Destroyed');
+		logger.trace('UIStore: Destroyed');
 	}
 
 	return {
-		// Base stores
-		uiState,
-		userPreferred,
-		isInitialized,
+		// Base state accessors - wrapped in objects with .value for backward compatibility
+		uiState: {
+			get value() {
+				return uiState;
+			},
+			set value(newValue: UIState) {
+				uiState = newValue;
+			}
+		},
+		userPreferred: {
+			get value() {
+				return userPreferred;
+			},
+			set value(newValue: UIVisibility) {
+				userPreferred = newValue;
+			}
+		},
+		isInitialized: {
+			get value() {
+				return isInitialized;
+			},
+			set value(newValue: boolean) {
+				isInitialized = newValue;
+			}
+		},
 
-		// Derived visibility stores
-		...visibilityStores,
+		// Derived visibility - wrapped in objects with .value
+		isLeftSidebarVisible: {
+			get value() {
+				return uiState.leftSidebar !== 'hidden';
+			}
+		},
+		isRightSidebarVisible: {
+			get value() {
+				return uiState.rightSidebar !== 'hidden';
+			}
+		},
+		isPageHeaderVisible: {
+			get value() {
+				return uiState.pageheader !== 'hidden';
+			}
+		},
+		isPageFooterVisible: {
+			get value() {
+				return uiState.pagefooter !== 'hidden';
+			}
+		},
+		isHeaderVisible: {
+			get value() {
+				return uiState.header !== 'hidden';
+			}
+		},
+		isFooterVisible: {
+			get value() {
+				return uiState.footer !== 'hidden';
+			}
+		},
 
 		// Functions
 		toggleUIElement,
 		updateLayout,
 		initialize,
-		destroy
+		destroy,
+		setRouteContext
 	};
 };
 
 // Create and export the UI state manager
-export const uiStateManager = createUIStores();
+let effectRoot: (() => void) | undefined;
 
-// Export individual stores
+export const uiStateManager = (() => {
+	const manager = createUIStores();
+
+	// Set up mode tracking using $effect.root() for module-level reactivity
+	if (typeof window !== 'undefined') {
+		effectRoot = $effect.root(() => {
+			$effect(() => {
+				const currentMode = mode.value;
+				logger.debug(`UIStore: Detected mode change to '${currentMode}', updating layout.`);
+				manager.updateLayout();
+			});
+		});
+	}
+
+	return manager;
+})();
+
+// Export individual store-like wrappers for backward compatibility
 export const userPreferredState = {
-	subscribe: uiStateManager.userPreferred.subscribe,
-	set: uiStateManager.userPreferred.set,
-	update: uiStateManager.userPreferred.update
+	get value() {
+		return uiStateManager.userPreferred.value;
+	},
+	set value(val: UIVisibility) {
+		uiStateManager.userPreferred.value = val;
+	},
+	set(val: UIVisibility) {
+		uiStateManager.userPreferred.value = val;
+	}
 };
 
 // Export functions
 export const toggleUIElement = uiStateManager.toggleUIElement;
 export const handleUILayoutToggle = uiStateManager.updateLayout;
+export const setRouteContext = uiStateManager.setRouteContext;
 
 // Auto-initialize (client-side only)
 if (typeof window !== 'undefined') {

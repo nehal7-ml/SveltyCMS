@@ -3,20 +3,20 @@
 @component
 **VirtualFolder component for managing virtual folders in a media gallery**
 
-```tsx
+@example
 <VirtualFolder {currentFolder} />
-```
-@props
+
+### Props
 - `currentFolder` (object): The currently selected folder.
 
-@events
+### Events
 - `updateFolder` (event): Emits an event when a folder is updated.
 - `deleteFolder` (event): Emits an event when a folder is deleted.
 - `createFolder` (event): Emits an event when a new folder is created.
 - `navigateToFolder` (event): Emits an event when a folder is navigated to.
 - `returnToCollections` (event): Emits an event when the "Return to Collections" button is clicked
 
-Features:
+### Features:
 - Fetches and displays virtual folders
 - Creates new folders
 - Updates existing folders (except root)
@@ -27,20 +27,15 @@ Features:
 -->
 
 <script lang="ts">
+	import { showToast } from '@utils/toast';
+	import { logger } from '@utils/logger';
 	import { onMount } from 'svelte';
-	import { getToastStore } from '@skeletonlabs/skeleton';
-	import { goto } from '$app/navigation';
-	import { publicEnv } from '@root/config/public';
-
 	// Stores
-	import { get } from 'svelte/store';
-	import { uiStateManager, toggleUIElement } from '@stores/UIStore.svelte';
+	import { publicEnv } from '@src/stores/globalSettings.svelte';
+	import { toggleUIElement, uiStateManager } from '@stores/UIStore.svelte';
+	import { setMode } from '@stores/collectionStore.svelte';
 	import { screenSize } from '@stores/screenSizeStore.svelte';
-	import { mode } from '@stores/collectionStore.svelte';
-
-	// Toast notifications
-	const toastStore = getToastStore();
-
+	import { get } from 'svelte/store';
 	// Import types
 	import type { SystemVirtualFolder } from '@src/databases/dbInterface';
 
@@ -49,7 +44,7 @@ Features:
 		currentFolder?: SystemVirtualFolder | null;
 	}
 
-	let { currentFolder = null }: Props = $props();
+	const { currentFolder = null }: Props = $props();
 	let folders: SystemVirtualFolder[] = $state([]);
 	let newFolderName = '';
 	let isLoading = $state(false);
@@ -65,7 +60,7 @@ Features:
 		isLoading = true;
 		error = null;
 		try {
-			const response = await fetch('/api/virtualFolder');
+			const response = await fetch('/api/systemVirtualFolder');
 			if (!response.ok) {
 				throw new Error(`HTTP error! status: ${response.status}`);
 			}
@@ -82,11 +77,7 @@ Features:
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			error = message;
-			toastStore.trigger({
-				message: 'Error fetching folders: ' + message,
-				background: 'variant-filled-error',
-				timeout: 5000
-			});
+			showToast('Error fetching folders: ' + message, 'error');
 			folders = [];
 		} finally {
 			isLoading = false;
@@ -99,7 +90,7 @@ Features:
 		isLoading = true;
 
 		try {
-			const response = await fetch('/api/virtualFolder', {
+			const response = await fetch('/api/systemVirtualFolder', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
@@ -114,11 +105,7 @@ Features:
 
 			const result = await response.json();
 			if (result.success) {
-				toastStore.trigger({
-					message: 'Folder created successfully',
-					background: 'variant-filled-success',
-					timeout: 3000
-				});
+				showToast('Folder created successfully', 'success');
 				newFolderName = '';
 				await fetchVirtualFolders();
 			} else {
@@ -127,11 +114,7 @@ Features:
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			error = message;
-			toastStore.trigger({
-				message: 'Error creating folder: ' + message,
-				background: 'variant-filled-error',
-				timeout: 5000
-			});
+			showToast('Error creating folder: ' + message, 'error');
 		} finally {
 			isLoading = false;
 		}
@@ -140,7 +123,7 @@ Features:
 	// Update an existing folder
 	export async function updateFolder(folderId: string, newName: string): Promise<void> {
 		try {
-			const response = await fetch('/api/virtualFolder', {
+			const response = await fetch('/api/systemVirtualFolder', {
 				method: 'PATCH',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ folderId, name: newName })
@@ -148,29 +131,21 @@ Features:
 			const result = await response.json();
 
 			if (result.success) {
-				toastStore.trigger({
-					message: 'Folder updated successfully',
-					background: 'variant-filled-success',
-					timeout: 3000
-				});
+				showToast('Folder updated successfully', 'success');
 				await fetchVirtualFolders();
 			} else {
 				throw new Error(result.error || 'Failed to update folder');
 			}
 		} catch (error) {
-			console.error('Error updating folder:', error);
-			toastStore.trigger({
-				message: 'Error updating folder',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+			logger.error('Error updating folder:', error);
+			showToast('Error updating folder', 'error');
 		}
 	}
 
 	// Delete a folder
 	export async function deleteFolder(folderId: string): Promise<void> {
 		try {
-			const response = await fetch('/api/virtualFolder', {
+			const response = await fetch('/api/systemVirtualFolder', {
 				method: 'DELETE',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ folderId })
@@ -178,43 +153,28 @@ Features:
 			const result = await response.json();
 
 			if (result.success) {
-				toastStore.trigger({
-					message: 'Folder deleted successfully',
-					background: 'variant-filled-success',
-					timeout: 3000
-				});
+				showToast('Folder deleted successfully', 'success');
 				await fetchVirtualFolders();
 			} else {
 				throw new Error(result.error || 'Failed to delete folder');
 			}
 		} catch (error) {
-			console.error('Error deleting folder:', error);
-			toastStore.trigger({
-				message: 'Error deleting folder',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+			logger.error('Error deleting folder:', error);
+			showToast('Error deleting folder', 'error');
 		}
 	}
 
-	// Navigate to a folder
-	async function openFolder(folderId: string | null): Promise<void> {
-		if (folderId === null) {
-			// Navigate to root
-			await goto('/mediagallery');
-		} else {
-			// Navigate to the selected folder
-			await goto(`/mediagallery?folderId=${folderId}`);
-		}
-	}
-
-	// Return to Collections
-	function returnToCollections(): void {
-		mode.set('view');
-		goto('/'); // Adjust this route as needed
+	// Handle mobile sidebar close on navigation
+	function handleMobileSidebarClose() {
 		if (get(screenSize) === 'SM') {
 			toggleUIElement('leftSidebar', 'hidden');
 		}
+	}
+
+	// Return to Collections - handle mode switching
+	function handleReturnToCollections() {
+		setMode('view');
+		handleMobileSidebarClose();
 	}
 
 	// Fetch folders on component mount
@@ -227,24 +187,28 @@ Features:
 	<!-- Return to Collections Button -->
 	{#if uiStateManager.uiState.value.leftSidebar === 'full'}
 		<!-- Sidebar Expanded -->
-		<button
-			onclick={returnToCollections}
+		<a
+			href="/"
+			onclick={handleReturnToCollections}
 			aria-label="Return to Collections"
 			class="btn mt-1 flex w-full flex-row items-center justify-start bg-surface-400 py-2 pl-2 text-white dark:bg-surface-500"
+			data-sveltekit-preload-data="hover"
 		>
 			<iconify-icon icon="mdi:folder-multiple-outline" width="24" class="px-2 py-1 text-primary-600 rtl:ml-2"></iconify-icon>
 			<p class="mr-auto text-center uppercase">Collections</p>
-		</button>
+		</a>
 	{:else}
 		<!-- Sidebar Collapsed -->
-		<button
-			onclick={returnToCollections}
+		<a
+			href="/"
+			onclick={handleReturnToCollections}
 			aria-label="Return to Collections"
 			class="btn mt-2 flex-col bg-surface-400 uppercase text-white hover:!bg-surface-300 dark:bg-surface-500"
+			data-sveltekit-preload-data="hover"
 		>
 			<iconify-icon icon="bi:collection" width="24" class="text-error-500"></iconify-icon>
 			<p class="text-xs uppercase text-white">Collections</p>
-		</button>
+		</a>
 	{/if}
 
 	<!-- Loading State -->
@@ -259,24 +223,36 @@ Features:
 		</div>
 	{:else if folders.length > 0}
 		<div class="relative flex flex-wrap">
-			{#each folders.filter((f) => !currentFolder || f.parent === currentFolder?._id) as folder (folder._id)}
+			{#each folders.filter((f) => !currentFolder || f.parentId === currentFolder?._id) as folder (folder._id)}
 				{#if uiStateManager.uiState.value.leftSidebar === 'full'}
 					<!-- Sidebar Expanded -->
 					<div class="nowrap variant-outline-surface flex w-full">
-						<button onclick={() => openFolder(folder._id)} aria-label={`Open folder: ${folder.name}`} class="btn flex items-center space-x-2 p-2">
+						<a
+							href={`/mediagallery?folderId=${folder._id}`}
+							onclick={handleMobileSidebarClose}
+							aria-label={`Open folder: ${folder.name}`}
+							class="btn flex items-center space-x-2 p-2"
+							data-sveltekit-preload-data="hover"
+						>
 							<iconify-icon icon="mdi:folder" width="28" class="text-yellow-500"></iconify-icon>
 							<span class="flex-1 overflow-hidden text-ellipsis text-left text-sm">{folder.name}</span>
-						</button>
+						</a>
 					</div>
 				{:else}
 					<!-- Sidebar Collapsed -->
 					<div
 						class="nowrap mt-2 flex w-full flex-col items-center rounded bg-surface-400 uppercase text-white hover:!bg-surface-300 dark:bg-surface-500"
 					>
-						<button onclick={() => openFolder(folder._id)} aria-label={`Open folder: ${folder.name}`} class="btn flex flex-col items-center p-2">
+						<a
+							href={`/mediagallery?folderId=${folder._id}`}
+							onclick={handleMobileSidebarClose}
+							aria-label={`Open folder: ${folder.name}`}
+							class="btn flex flex-col items-center p-2"
+							data-sveltekit-preload-data="hover"
+						>
 							<iconify-icon icon="mdi:folder" width="28" class="text-yellow-500"></iconify-icon>
 							<span class="text-xs">{folder.name}</span>
-						</button>
+						</a>
 					</div>
 				{/if}
 			{/each}

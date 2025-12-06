@@ -1,4 +1,4 @@
-<!-- 
+<!--
 @file Authentication Form Component for SveltyCMS
 @component
 **This component handles both SignIn and SignUp functionality for the SveltyCMS**
@@ -13,42 +13,32 @@ Features:
 -->
 
 <script lang="ts">
-	import { publicEnv } from '@root/config/public';
-	import type { PageData } from './$types';
-
+	import { logger } from '@utils/logger';
+	import { getPublicSetting, publicEnv } from '@src/stores/globalSettings.svelte';
 	// Components
+	import Seasons from '@components/system/icons/Seasons.svelte';
+	import SveltyCMSLogoFull from '@components/system/icons/SveltyCMS_LogoFull.svelte';
 	import SignIn from './components/SignIn.svelte';
 	import SignUp from './components/SignUp.svelte';
-	import SveltyCMSLogoFull from '@components/system/icons/SveltyCMS_LogoFull.svelte';
-	import Seasons from '@components/system/icons/Seasons.svelte';
-
+	import VersionCheck from '@components/VersionCheck.svelte';
 	// Stores
 	import { systemLanguage } from '@stores/store.svelte';
 	import { getLanguageName } from '@utils/languageUtils';
-	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
-	import { setSystemLanguage } from '@stores/store.svelte';
-
+	import { locales as availableLocales } from '@src/paraglide/runtime';
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
 	// Props
-	const { data } = $props<{ data: PageData }>();
+	const { data } = $props();
 
-	// State Management
-	const firstUserExists = $state(data.firstUserExists);
-	const firstCollection = $state(data.firstCollection);
+	// Derive firstUserExists to make it reactive (fixes state_referenced_locally warning)
+	const firstUserExists = $derived(data.firstUserExists);
 
 	// Check for reset password URL parameters (initially false, updated by effect)
 	let hasResetParams = $state(false);
 
-	// Set Initial active state based on conditions (will be updated by effect)
-	let active = $state<undefined | 0 | 1>(
-		publicEnv.DEMO || publicEnv.SEASONS
-			? undefined // If DEMO or SEASONS is enabled, show logo
-			: firstUserExists
-				? undefined // Show SignIn if the first user exists
-				: 1 // Otherwise, show SignUp
-	);
+	// Set Initial active state - always starts undefined, will be set by user interaction
+	let active: undefined | 0 | 1 = $state(undefined);
 
 	// Update active state when URL parameters are detected
 	$effect(() => {
@@ -67,16 +57,24 @@ Features:
 		}
 	});
 
-	// Set initial background based on conditions (will be updated reactively)
-	let background = $state<'white' | '#242728'>(
-		publicEnv.DEMO
-			? '#242728' // Dark background for DEMO mode
-			: publicEnv.SEASONS
-				? 'white' // Light background for SEASONS mode
-				: firstUserExists
-					? 'white' // Light background for existing users
-					: '#242728' // Dark background for new users
-	);
+	// Background state - mutable for user interactions
+	let background = $state('#242728');
+
+	// Initialize background based on conditions
+	$effect(() => {
+		// Only set initial background, don't override user interactions
+		if (active === undefined && !hasResetParams) {
+			if (publicEnv?.DEMO) {
+				background = '#242728';
+			} else if (publicEnv?.SEASONS) {
+				background = 'white';
+			} else if (firstUserExists) {
+				background = 'white';
+			} else {
+				background = '#242728';
+			}
+		}
+	});
 
 	// Update background when hasResetParams changes
 	$effect(() => {
@@ -88,16 +86,12 @@ Features:
 	let timeRemaining = $state({ minutes: 0, seconds: 0 });
 	let searchQuery = $state('');
 	let isDropdownOpen = $state(false);
-	let searchInput = $state<HTMLInputElement | null>(null);
+	let searchInput: HTMLInputElement | null = $state(null);
 	let isTransitioning = $state(false);
-	let debounceTimeout = $state<ReturnType<typeof setTimeout>>();
+	let debounceTimeout: ReturnType<typeof setTimeout> | undefined = $state();
 
 	// Derived state using $derived rune
-	const availableLanguages = $derived(
-		Array.isArray(publicEnv.LOCALES)
-			? [...publicEnv.LOCALES].sort((a, b) => getLanguageName(a, 'en').localeCompare(getLanguageName(b, 'en')))
-			: ['en']
-	);
+	const availableLanguages = $derived([...availableLocales].sort((a, b) => getLanguageName(a, 'en').localeCompare(getLanguageName(b, 'en'))));
 
 	const filteredLanguages = $derived(
 		availableLanguages.filter(
@@ -108,19 +102,14 @@ Features:
 	);
 
 	// Ensure a valid language is always used
-	const currentLanguage = $derived(
-		systemLanguage.value && Array.isArray(publicEnv.LOCALES) && publicEnv.LOCALES.includes(systemLanguage.value) ? systemLanguage.value : 'en'
-	);
-
-	// Package version
-	// @ts-expect-error reading from vite.config.js
-	const pkg = __VERSION__;
+	const currentLanguage = $derived(systemLanguage.value && availableLocales.includes(systemLanguage.value) ? systemLanguage.value : 'en');
 
 	// Language selection
 	function handleLanguageSelection(lang: string) {
 		clearTimeout(debounceTimeout);
 		debounceTimeout = setTimeout(() => {
-			setSystemLanguage(lang as (typeof systemLanguage)['value']);
+			// Set cookie via store (bridge to ParaglideJS)
+			systemLanguage.set(lang as (typeof systemLanguage)['value']);
 			isDropdownOpen = false;
 			searchQuery = '';
 		}, 100); // Reduced delay for faster feedback
@@ -166,7 +155,7 @@ Features:
 	// Set up the interval to update the countdown every second
 	$effect(() => {
 		let interval: ReturnType<typeof setInterval> | undefined;
-		if (publicEnv.DEMO) {
+		if (getPublicSetting('DEMO')) {
 			updateTimeRemaining();
 			interval = setInterval(updateTimeRemaining, 1000);
 			return () => {
@@ -180,7 +169,7 @@ Features:
 		if (isTransitioning) return;
 		isTransitioning = true;
 		active = undefined;
-		background = publicEnv.DEMO ? '#242728' : publicEnv.SEASONS ? '#242728' : firstUserExists ? 'white' : '#242728';
+		background = data.demoMode ? '#242728' : getPublicSetting('SEASONS') ? '#242728' : firstUserExists ? 'white' : '#242728';
 		setTimeout(() => {
 			isTransitioning = false;
 		}, 300);
@@ -226,13 +215,13 @@ Features:
 
 	// Handle pointer enter events
 	function handleSignInPointerEnter() {
-		if (active === undefined && !publicEnv.DEMO && !publicEnv.SEASONS) {
+		if (active === undefined && !data.demoMode && !getPublicSetting('SEASONS')) {
 			background = 'white';
 		}
 	}
 
 	function handleSignUpPointerEnter() {
-		if (active === undefined && !publicEnv.DEMO && !publicEnv.SEASONS) {
+		if (active === undefined && !data.demoMode && !getPublicSetting('SEASONS')) {
 			background = '#242728';
 		}
 	}
@@ -245,8 +234,6 @@ Features:
 	// Prefetch when active state changes to SignIn (0) or SignUp (1)
 	$effect(() => {
 		if (active !== undefined) {
-			console.log(`[DEBUG] Active state changed to: ${active}, triggering prefetch...`);
-
 			// Call prefetch action on the server
 			fetch('/login?/prefetch', {
 				method: 'POST',
@@ -259,33 +246,88 @@ Features:
 			})
 				.then((response) => {
 					if (response.ok) {
-						console.log('[DEBUG] Prefetch action completed successfully');
 					} else {
-						console.log('[DEBUG] Prefetch action failed:', response.status);
+						logger.debug('[DEBUG] Prefetch action failed:', response.status);
 					}
 				})
 				.catch((err) => {
-					console.log('[DEBUG] Prefetch fetch error:', err);
+					logger.debug('[DEBUG] Prefetch fetch error:', err);
 				});
 		}
 	});
 </script>
 
 <div class={`flex min-h-lvh w-full overflow-y-auto bg-${background} transition-colors duration-300`}>
+	<!-- Database Error Display -->
+	{#if data.showDatabaseError}
+		<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+			<div class="max-w-2xl rounded-lg bg-white p-8 shadow-xl">
+				<div class="mb-4 flex items-center gap-3">
+					<svg class="h-8 w-8 text-error-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="2"
+							d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
+						/>
+					</svg>
+					<h2 class="text-2xl font-bold text-error-500">Database Issue Detected</h2>
+				</div>
+
+				<p class="mb-4 text-lg">The system configuration exists, but the database is empty or unavailable.</p>
+
+				<div class="mb-4 rounded-lg bg-surface-200 p-4">
+					<p class="font-semibold">Reason:</p>
+					<p class="text-sm">{data.errorReason}</p>
+				</div>
+
+				<div class="mb-6">
+					<h3 class="mb-2 font-semibold">Possible Solutions:</h3>
+					<ul class="list-inside list-disc space-y-1 text-sm">
+						<li>If MongoDB is not running, start it and refresh this page</li>
+						<li>If the database was manually dropped, you need to reset the setup</li>
+						<li>Check your database connection settings in config/private.ts</li>
+						<li>Restore your database from a backup if available</li>
+					</ul>
+				</div>
+
+				{#if data.canReset}
+					<div class="flex gap-4">
+						<button
+							type="button"
+							onclick={async () => {
+								if (confirm('This will delete your configuration and restart the setup process. Are you sure?')) {
+									const response = await fetch('/api/setup/reset', { method: 'POST' });
+									const result = await response.json();
+									if (result.success) {
+										window.location.href = '/setup';
+									} else {
+										alert('Failed to reset setup: ' + result.error);
+									}
+								}
+							}}
+							class="variant-filled-warning btn"
+						>
+							Reset Setup
+						</button>
+						<button type="button" onclick={() => window.location.reload()} class="variant-filled-secondary btn"> Refresh Page </button>
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
 	<!-- SignIn and SignUp Forms -->
 	<SignIn
 		bind:active
-		FormSchemaLogin={data.loginForm}
-		FormSchemaForgot={data.forgotForm}
-		FormSchemaReset={data.resetForm}
 		onClick={handleSignInClick}
 		onPointerEnter={handleSignInPointerEnter}
 		onBack={resetToInitialState}
+		firstCollectionPath={data.firstCollectionPath || ''}
 	/>
 
 	<SignUp
 		bind:active
-		FormSchemaSignUp={data.signUpForm}
 		isInviteFlow={data.isInviteFlow || false}
 		token={data.token || ''}
 		invitedEmail={data.invitedEmail || ''}
@@ -293,10 +335,11 @@ Features:
 		onClick={handleSignUpClick}
 		onPointerEnter={handleSignUpPointerEnter}
 		onBack={resetToInitialState}
+		firstCollectionPath={data.firstCollectionPath || ''}
 	/>
 
 	{#if active == undefined}
-		{#if publicEnv.DEMO}
+		{#if data.demoMode}
 			<!-- DEMO MODE -->
 			<div
 				class="absolute bottom-2 left-1/2 flex min-w-[350px] -translate-x-1/2 -translate-y-1/2 transform flex-col items-center justify-center rounded-xl bg-error-500 p-3 text-center text-white transition-opacity duration-300 sm:bottom-12"
@@ -330,7 +373,7 @@ Features:
 			class="language-selector absolute bottom-1/4 left-1/2 -translate-x-1/2 transform transition-opacity duration-300"
 			class:opacity-50={isTransitioning}
 		>
-			{#if Array.isArray(publicEnv.LOCALES) && publicEnv.LOCALES.length > 5}
+			{#if Array.isArray(getPublicSetting('LOCALES')) && getPublicSetting('LOCALES').length > 5}
 				<div class="relative">
 					<!-- Current Language Display -->
 					<button
@@ -398,32 +441,10 @@ Features:
 				</select>
 			{/if}
 		</div>
-
 		<!-- CMS Version -->
-		{#if !isDropdownOpen}
-			<!-- Collection Preview -->
-			{#if firstCollection && (active === 0 || active === 1)}
-				<div
-					class="absolute bottom-16 left-1/2 z-0 flex min-w-[200px] max-w-[300px] -translate-x-1/2 transform flex-col items-center gap-2 rounded-lg bg-gradient-to-r from-surface-50/10 to-[#242728]/10 p-3 text-center transition-opacity duration-300"
-					class:opacity-50={isTransitioning}
-				>
-					<div class="text-xs text-gray-300">After login, you'll go to:</div>
-					<div class="text-sm font-medium text-white">{firstCollection.name}</div>
-				</div>
-			{/if}
-
-			<a
-				href="https://github.com/SveltyCMS/SveltyCMS"
-				target="_blank"
-				rel="noopener"
-				class="absolute bottom-5 left-1/2 right-1/3 z-0 flex min-w-[100px] max-w-[250px] -translate-x-1/2 -translate-y-1/2 transform justify-center gap-6 rounded-full bg-gradient-to-r from-surface-50/20 to-[#242728]/20 transition-opacity duration-300"
-				class:opacity-50={isTransitioning}
-				tabindex={isTransitioning ? -1 : 0}
-			>
-				<p class="text-[#242728]">Ver.</p>
-				<p class="text-white">{pkg}</p>
-			</a>
-		{/if}
+		<div class="absolute bottom-5 left-1/2 -translate-x-1/2">
+			<VersionCheck transparent={true} />
+		</div>
 	{/if}
 </div>
 

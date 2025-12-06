@@ -13,7 +13,7 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import { error } from '@sveltejs/kit';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Permission checking
 
@@ -21,10 +21,10 @@ import { privateEnv } from '@root/config/private';
 import { auth } from '@src/databases/db';
 
 // Media Processing
-import { moveMediaToTrash } from '@utils/media/mediaStorage';
+import { moveMediaToTrash } from '@utils/media/mediaStorage.server';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 export const POST: RequestHandler = async ({ request, locals }) => {
 	const { user, tenantId } = locals;
@@ -35,7 +35,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		throw error(500, 'Auth service not available');
 	}
 
-	if (privateEnv.MULTI_TENANT && !tenantId) {
+	if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 		throw error(400, 'Tenant could not be identified for this operation.');
 	}
 

@@ -14,54 +14,27 @@
 - `totalItems` {number}: The total number of items in the table (default: 0)
 - `onUpdatePage` {(page: number) => void}: Event handler for updating the current page
 - `onUpdateRowsPerPage` {(rows: number) => void}: Event handler for updating the number of rows per page
+
+### Features
+- Provides pagination controls for navigating through table data
+- Displays current page, total pages, and item range
+- Allows selection of rows per page from predefined options
 -->
 
 <script lang="ts">
-	export interface TableHeader {
-		label: string;
-		name: string;
-		id: string;
-		visible: boolean;
-		width?: number;
-		sortable?: boolean;
-	}
-
-	export interface PaginationSettings {
-		collectionId: string | null;
-		density: 'compact' | 'normal' | 'comfortable';
-		sorting: {
-			sortedBy: string;
-			isSorted: 0 | 1 | -1;
-		};
-		currentPage: number;
-		rowsPerPage: number;
-		filters: Record<string, string>;
-		displayTableHeaders: TableHeader[];
-		pagesCount?: number;
-		totalItems?: number;
-	}
-
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
 	// Props with default values
 	let {
-		currentPage = $bindable(1),
+		currentPage = $bindable(),
 		pagesCount = 1,
-		rowsPerPage = $bindable(10),
+		rowsPerPage = $bindable(),
 		rowsPerPageOptions = [5, 10, 25, 50, 100, 500],
 		totalItems = 0,
 		onUpdatePage,
 		onUpdateRowsPerPage
-	} = $props<{
-		currentPage?: number; // Current page number
-		pagesCount?: number; // Total number of pages
-		rowsPerPage?: number; // Number of rows per page
-		rowsPerPageOptions?: number[]; // Options for rows per page
-		totalItems?: number; // Total number of items in the table
-		onUpdatePage?: (page: number) => void; // Event handler for updating the current page
-		onUpdateRowsPerPage?: (rows: number) => void; // Event handler for updating the number of rows per page
-	}>();
+	} = $props();
 
 	// Derived pagesCount if not provided
 	const computedPagesCount = $derived(pagesCount && pagesCount > 0 ? pagesCount : rowsPerPage > 0 ? Math.ceil(totalItems / rowsPerPage) : 1);
@@ -73,7 +46,7 @@
 	const startItem = $derived(totalItems === 0 ? 0 : (currentPage - 1) * rowsPerPage + 1);
 	const endItem = $derived(totalItems === 0 ? 0 : Math.min(currentPage * rowsPerPage, totalItems));
 
-	// Go to page - IMMEDIATE 
+	// Go to page - IMMEDIATE
 	function goToPage(page: number) {
 		if (page >= 1 && page <= computedPagesCount && page !== currentPage) {
 			currentPage = page;

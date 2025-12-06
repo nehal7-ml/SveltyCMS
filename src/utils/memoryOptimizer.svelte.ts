@@ -6,6 +6,7 @@
  */
 
 import { SvelteSet } from 'svelte/reactivity';
+import { logger } from '@utils/logger';
 
 /**
  * Creates a memory-efficient store with automatic cleanup
@@ -65,7 +66,7 @@ export function createDebouncedEffect(fn: () => void, dependencies: () => unknow
 		}
 
 		// Set new timeout
-		timeoutId = setTimeout(fn, delay);
+		timeoutId = setTimeout(fn, delay) as unknown as number;
 
 		// Cleanup function
 		return () => {
@@ -97,7 +98,7 @@ export function createThrottledEffect(fn: () => void, dependencies: () => unknow
 					fn();
 				},
 				delay - (now - lastRun)
-			);
+			) as unknown as number;
 		}
 
 		return () => {
@@ -123,7 +124,7 @@ export function createResourceManager() {
 				try {
 					cleanup();
 				} catch (error) {
-					console.warn('Resource cleanup error:', error);
+					logger.warn('Resource cleanup error:', error);
 				}
 			});
 			resources.clear();

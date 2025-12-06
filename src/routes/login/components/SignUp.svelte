@@ -1,67 +1,55 @@
-<!-- 
+<!--
 @file src/routes/login/components/SignUp.svelte
 @component
-**SignUp component with optional OAuth support**
+**SignUP with optional OAuth support**
 
 Features:
  - Dynamic language selection with a debounced input field or dropdown for multiple languages
- - Demo mode support with auto-reset timer displayed when active
+ - Demo mode support with auto-reset timer 
  - Initial form display adapts based on environment variables (`SEASON`, `DEMO`, and `firstUserExists`)
  - Reset state functionality for easy return to initial screen
  - Accessibility features for language selection and form navigation
 -->
 
 <script lang="ts">
+	import { logger } from '@utils/logger';
 	import { browser } from '$app/environment';
-	import { privateEnv } from '@root/config/private';
+	import { enhance } from '$app/forms';
+	import { preloadData } from '$app/navigation';
 
 	import type { PageData } from '../$types';
 
 	// Stores
 	import { page } from '$app/state';
 
-	// Superforms
-	// import SuperDebug from 'sveltekit-superforms/client/SuperDebug.svelte';
-	import type { SignUpFormSchema } from '@utils/formSchemas';
-	import type { SuperValidated } from 'sveltekit-superforms';
-	import { superForm } from 'sveltekit-superforms/client';
+	import { Form } from '@utils/Form.svelte';
+	import { signUpFormSchema } from '@utils/formSchemas';
 	// Components
 	import PasswordStrength from '@components/PasswordStrength.svelte';
 	import SiteName from '@components/SiteName.svelte';
 	import SveltyCMSLogo from '@components/system/icons/SveltyCMS_Logo.svelte';
 	import SveltyCMSLogoFull from '@components/system/icons/SveltyCMS_LogoFull.svelte';
 	import FloatingInput from '@components/system/inputs/floatingInput.svelte';
-	// Lazy-load FloatingPaths for performance on desktop
-	let FloatingPathsComponent = $state<any>(null);
 	import SignupIcon from './icons/SignupIcon.svelte';
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
 	// Screen size store
 	import { isDesktop } from '@stores/screenSizeStore.svelte';
+	import type { Component } from 'svelte';
 
 	// Props
 	const {
 		active = $bindable(undefined),
-		FormSchemaSignUp,
 		isInviteFlow = false,
 		token = '',
 		invitedEmail = '',
 		inviteError = '',
 		onClick = () => {},
 		onPointerEnter = () => {},
-		onBack = () => {}
-	} = $props<{
-		active?: undefined | 0 | 1;
-		FormSchemaSignUp: SuperValidated<SignUpFormSchema>;
-		isInviteFlow?: boolean;
-		token?: string;
-		invitedEmail?: string;
-		inviteError?: string;
-		onClick?: () => void;
-		onPointerEnter?: () => void;
-		onBack?: () => void;
-	}>();
+		onBack = () => {},
+		firstCollectionPath = ''
+	} = $props();
 
 	const pageData = page.data as PageData;
 	const firstUserExists = pageData.firstUserExists;
@@ -69,12 +57,13 @@ Features:
 	const hasExistingOAuthUsers = pageData.hasExistingOAuthUsers;
 
 	// State management
-	let tabIndex = $state(1);
-	let response = $state<any>(undefined);
-	let formElement = $state<HTMLFormElement | null>(null);
+	const tabIndex = $state(1);
+	let response = $state(undefined);
+	let formElement: HTMLFormElement | null = $state(null);
 	let showPassword = $state(false);
 	let isSubmitting = $state(false);
 	let isRedirecting = $state(false);
+	let FloatingPathsComponent: Component | null = $state(null);
 
 	// Pre-calculate tab indices
 	const usernameTabIndex = 1;
@@ -84,96 +73,81 @@ Features:
 	const tokenTabIndex = 5;
 
 	// Form setup
-	const { form, constraints, allErrors, errors, enhance } = superForm(FormSchemaSignUp, {
-		id: 'signup',
-		// Clear form on success.
-		resetForm: true,
-		// Prevent page invalidation, which would clear the other form when the load function executes again.
-		invalidateAll: false,
-		// other options
-		applyAction: true,
-		taintedMessage: '', // prevent multiple submits
-		multipleSubmits: 'prevent', // prevent multiple submits
+	// Form setup
+	const signUpForm = new Form({ username: '', email: '', password: '', confirm_password: '', token: '' }, signUpFormSchema);
 
+	const signUpSubmit = signUpForm.enhance({
 		onSubmit: ({ cancel }) => {
-			if ($allErrors.length > 0) {
+			if (Object.keys(signUpForm.errors).length > 0) {
 				cancel();
 				return;
 			}
-
-			// Set submitting state for better UX
 			isSubmitting = true;
 		},
 
-		onResult: ({ result, cancel }) => {
-			// Reset submitting state
+		onResult: async ({ result, update }) => {
 			isSubmitting = false;
 
-			if (result.type == 'redirect') {
-				// Set redirecting state for brief period
+			if (result.type === 'redirect') {
 				isRedirecting = true;
-
-				// Clear redirecting state after brief delay to allow redirect
 				setTimeout(() => {
 					isRedirecting = false;
-				}, 1000);
-
+				}, 100);
 				return;
 			}
 
-			// Reset redirecting state on non-redirect
 			isRedirecting = false;
-			cancel();
 
-			// add wiggle animation to form element
-			formElement?.classList.add('wiggle');
-			setTimeout(() => {
-				formElement?.classList.remove('wiggle');
-			}, 300);
+			if (result.type === 'failure' || result.type === 'error') {
+				formElement?.classList.add('wiggle');
+				setTimeout(() => {
+					formElement?.classList.remove('wiggle');
+				}, 300);
+			}
 
-			if (result.type == 'success') {
+			if (result.type === 'success') {
 				response = result.data?.message;
 			}
+
+			await update();
 		}
 	});
 
 	// Reactive form values for easier access
-	const currentFormToken = $derived($form.token);
+	const currentFormToken = $derived(signUpForm.data.token);
 
 	// URL parameter handling - update params when URL changes
 	const params = $derived(browser ? new URL(window.location.href).searchParams : new URLSearchParams(''));
 
 	// Initialize form with invite data when in invite flow
 	$effect(() => {
-		if (isInviteFlow && invitedEmail && $form.email !== invitedEmail) {
-			$form.email = invitedEmail;
+		if (isInviteFlow && invitedEmail && signUpForm.data.email !== invitedEmail) {
+			signUpForm.data.email = invitedEmail;
 		}
-		if (isInviteFlow && token && $form.token !== token) {
-			$form.token = token;
+		if (isInviteFlow && token && signUpForm.data.token !== token) {
+			signUpForm.data.token = token;
 		}
 		// Handle URL parameters for invite tokens (both new and legacy formats)
 		if (browser && !isInviteFlow) {
 			const inviteToken = params.get('invite_token') || params.get('regToken');
-			if (inviteToken && inviteToken !== $form.token) {
-				console.log('Setting invite token from URL:', inviteToken);
-				$form.token = inviteToken;
+			if (inviteToken && inviteToken !== signUpForm.data.token) {
+				signUpForm.data.token = inviteToken;
 			}
 		}
 		// Also check if the form was pre-filled by the server (invalid token case)
-		if (browser && $form.token && !isInviteFlow) {
-			console.log('Form token pre-filled by server:', $form.token);
+		if (browser && signUpForm.data.token && !isInviteFlow) {
+			logger.debug('Form token pre-filled by server:', signUpForm.data.token);
 		}
 	});
 
 	// Event handlers
 	function handleOAuth() {
 		// Check if user needs an invitation token
-		// First user (!firstUserExists) should NOT require a token
-		// Only existing users (firstUserExists) without an invite flow or token should be blocked
-		if (!isInviteFlow && firstUserExists && !hasExistingOAuthUsers && !currentFormToken) {
+		// All users now require invite tokens (first user goes through /setup)
+		if (!isInviteFlow && !hasExistingOAuthUsers && !currentFormToken) {
 			// Show a helpful message
 			alert(
-				'⚠️ Please enter your invitation token first before using Google OAuth signup. Both email/password and OAuth registration require an invitation from an administrator.'
+				'⚠️ Please enter your invitation token first before using Google OAuth signup. OAuth registration requires an invitation from an administrator.'
 			);
 			return;
 		}
@@ -225,10 +199,17 @@ Features:
 		const isActiveSignUp = active === 1;
 		if (browser && desktop && isActiveSignUp) {
 			import('@root/src/components/system/FloatingPaths.svelte').then((m) => {
-				FloatingPathsComponent = m.default;
+				FloatingPathsComponent = m.default as Component;
 			});
 		} else {
 			FloatingPathsComponent = null;
+		}
+	});
+
+	// Prefetch first collection data when active
+	$effect(() => {
+		if (active === 1 && firstCollectionPath) {
+			preloadData(firstCollectionPath);
 		}
 	});
 </script>
@@ -261,18 +242,14 @@ Features:
 					<SveltyCMSLogo className="w-14" fill="red" />
 
 					<h1 class="text-3xl font-bold text-white lg:text-4xl">
-						<div class="text-xs text-surface-300"><SiteName /></div>
+						<div class="text-xs text-surface-300"><SiteName highlight="CMS" /></div>
 						<div class="break-words lg:-mt-1">
 							{#if isInviteFlow}
 								{m.form_signup()}
 								<span class="text-2xl text-primary-500 sm:text-3xl">: Complete Invitation</span>
 							{:else}
 								{m.form_signup()}
-								{#if !firstUserExists}
-									<span class="text-2xl text-primary-500 sm:text-3xl">: Admin</span>
-								{:else}
-									<span class="text-2xl capitalize text-primary-500 sm:text-3xl">: New User</span>
-								{/if}
+								<span class="text-2xl capitalize text-primary-500 sm:text-3xl">: New User</span>
 							{/if}
 						</div>
 					</h1>
@@ -291,7 +268,7 @@ Features:
 				<form
 					method="post"
 					action="?/signUp"
-					use:enhance
+					use:enhance={signUpSubmit}
 					bind:this={formElement}
 					class="items flex flex-col gap-3"
 					class:hide={active !== 1}
@@ -304,16 +281,17 @@ Features:
 						type="text"
 						tabindex={usernameTabIndex}
 						required
-						bind:value={$form.username}
-						label={m.form_username()}
-						{...$constraints.username}
+						bind:value={signUpForm.data.username}
+						label={m.username()}
+						minlength={2}
+						maxlength={24}
 						icon="mdi:user-circle"
 						iconColor="white"
 						textColor="white"
 						inputClass="text-white"
 						autocomplete="username"
 					/>
-					{#if $errors.username}<span class="text-xs text-error-500">{$errors.username}</span>{/if}
+					{#if signUpForm.errors.username}<span class="text-xs text-error-500">{signUpForm.errors.username[0]}</span>{/if}
 
 					<!-- Email field -->
 					<FloatingInput
@@ -325,21 +303,22 @@ Features:
 						autocomplete="email"
 						autocapitalize="none"
 						spellcheck={false}
-						bind:value={$form.email}
-						label={m.form_emailaddress()}
-						{...$constraints.email}
+						bind:value={signUpForm.data.email}
+						label={m.email()}
+						minlength={5}
+						maxlength={50}
 						icon="mdi:email"
 						iconColor="white"
 						textColor="white"
 						inputClass="text-white {isInviteFlow ? 'opacity-70' : ''}"
 						disabled={isInviteFlow}
 					/>
-					{#if $errors.email}<span class="text-xs text-error-500">{$errors.email}</span>{/if}
+					{#if signUpForm.errors.email}<span class="text-xs text-error-500">{signUpForm.errors.email[0]}</span>{/if}
 					{#if isInviteFlow}<span class="text-xs text-primary-400">✓ Email pre-filled from invitation</span>{/if}
 
 					<!-- Hidden email input to ensure form submission when disabled -->
 					{#if isInviteFlow}
-						<input type="hidden" name="email" value={$form.email} />
+						<input type="hidden" name="email" value={signUpForm.data.email} />
 					{/if}
 
 					<!-- Password field -->
@@ -349,19 +328,20 @@ Features:
 						type="password"
 						tabindex={passwordTabIndex}
 						required
-						bind:value={$form.password}
-						{showPassword}
+						bind:value={signUpForm.data.password}
+						bind:showPassword
 						label={m.form_password()}
-						{...$constraints.password}
+						minlength={8}
+						maxlength={50}
 						icon="mdi:password"
 						iconColor="white"
 						textColor="white"
-						showPasswordBackgroundColor="dark"
+						passwordIconColor="white"
 						inputClass="text-white"
 						autocomplete="new-password"
 					/>
-					{#if $errors.password}
-						<span class="text-xs text-error-500">{$errors.password}</span>
+					{#if signUpForm.errors.password}
+						<span class="text-xs text-error-500">{signUpForm.errors.password[0]}</span>
 					{/if}
 
 					<!-- Password Confirm -->
@@ -371,46 +351,47 @@ Features:
 						type="password"
 						tabindex={confirmPasswordTabIndex}
 						required
-						bind:value={$form.confirm_password}
-						{showPassword}
-						label={m.form_confirmpassword()}
-						{...$constraints.confirm_password}
+						bind:value={signUpForm.data.confirm_password}
+						bind:showPassword
+						label={m.confirm_password?.() || m.form_confirmpassword?.()}
+						minlength={8}
+						maxlength={50}
 						icon="mdi:password"
 						iconColor="white"
 						textColor="white"
-						showPasswordBackgroundColor="dark"
+						passwordIconColor="white"
 						inputClass="text-white"
 						autocomplete="new-password"
 					/>
-					{#if $errors.confirm_password}
-						<span class="text-xs text-error-500">{$errors.confirm_password}</span>
+					{#if signUpForm.errors.confirm_password}
+						<span class="text-xs text-error-500">{signUpForm.errors.confirm_password[0]}</span>
 					{/if}
-
 					<!-- Password Strength Indicator -->
-					<PasswordStrength password={$form.password} confirmPassword={$form.confirm_password} />
+					<PasswordStrength password={signUpForm.data.password} confirmPassword={signUpForm.data.confirm_password} />
 
-					{#if firstUserExists == true && !isInviteFlow}
-						<!-- Registration Token (hidden when using invite flow) -->
+					{#if !isInviteFlow}
+						<!-- Registration Token (hidden when using invite flow, always required now since first user uses /setup) -->
 						<FloatingInput
 							id="tokensignUp"
 							name="token"
 							type="password"
 							tabindex={tokenTabIndex}
 							required
-							bind:value={$form.token}
-							label={m.signup_registrationtoken()}
-							{...$constraints.token}
+							bind:value={signUpForm.data.token}
+							label={m.registration_token?.() || m.signup_registrationtoken?.()}
+							minlength={36}
+							maxlength={36}
 							icon="mdi:key-chain"
 							iconColor="white"
 							textColor="white"
-							showPasswordBackgroundColor="dark"
+							passwordIconColor="white"
 							inputClass="text-white"
 							autocomplete="one-time-code"
 						/>
-						{#if $errors.token}
-							<span class="text-xs text-error-500">{$errors.token}</span>
+						{#if signUpForm.errors.token}
+							<span class="text-xs text-error-500">{signUpForm.errors.token[0]}</span>
 						{/if}
-						{#if $form.token && inviteError}
+						{#if signUpForm.data.token && inviteError}
 							<span class="text-xs text-warning-400">⚠️ Token was pre-filled from URL and will be validated against the server</span>
 						{/if}
 					{:else if isInviteFlow}
@@ -423,11 +404,11 @@ Features:
 						<span class="text-xs text-error-500">{response}</span>
 					{/if}
 
-					{#if inviteError && !$form.token}
+					{#if inviteError && !signUpForm.data.token}
 						<span class="text-xs text-error-500">{inviteError}</span>
 					{/if}
 
-					{#if !privateEnv.USE_GOOGLE_OAUTH || !showOAuth}
+					{#if !showOAuth}
 						<!-- Email SignIn only -->
 						<button type="submit" class="variant-filled btn mt-4 uppercase" aria-label={isInviteFlow ? 'Accept Invitation' : m.form_signup()}>
 							{isInviteFlow ? 'Accept Invitation & Create Account' : m.form_signup()}

@@ -44,13 +44,12 @@
 - Content editor hints
 - Fluid typography scaling
 -->
-
 <script lang="ts">
-	import { goto } from '$app/navigation';
-
 	// Stores
 	import { toggleUIElement, uiStateManager } from '@stores/UIStore.svelte';
-	import { screenSize } from '@stores/screenSizeStore.svelte';
+	import { isDesktop } from '@stores/screenSizeStore.svelte';
+
+	type DefaultBehaviorFn = () => void;
 
 	interface Props {
 		name: string;
@@ -61,10 +60,10 @@
 		showBackButton?: boolean;
 		backUrl?: string;
 		truncate?: boolean;
-		onBackClick?: (defaultBehavior: () => void) => void;
+		onBackClick?: (defaultBehavior: DefaultBehaviorFn) => void;
 	}
 
-	let {
+	const {
 		name,
 		highlight = '',
 		icon,
@@ -76,80 +75,41 @@
 		onBackClick
 	}: Props = $props();
 
-	let canvas: HTMLCanvasElement;
-
-	function getTextWidth(text: string, fontSize: number): number {
-		if (!canvas) return 0;
-		const context = canvas.getContext('2d');
-		if (!context) return 0;
-		context.font = `${fontSize}px sans-serif`;
-		return context.measureText(text).width;
-	}
-
-	let windowWidth = $state(typeof window !== 'undefined' ? window.innerWidth : 1024);
-
-	let calculatedTitle = $derived(() => {
-		if (!truncate) return name;
-		const containerWidth = windowWidth;
-		const hamburgerWidth = uiStateManager.uiState.value.leftSidebar === 'hidden' ? 50 : 0;
-		const backButtonWidth = showBackButton ? 60 : 0;
-		const iconWidth = icon ? parseInt(iconSize) + 8 : 0;
-		const padding = 32;
-		const availableWidth = containerWidth - (hamburgerWidth + backButtonWidth + iconWidth + padding);
-		const fontSize = 24;
-		const textWidth = getTextWidth(name, fontSize);
-		if (textWidth === 0) return name;
-		const maxChars = Math.floor((availableWidth / textWidth) * name.length);
-		return name.length > maxChars ? name.slice(0, maxChars - 3) + '...' : name;
-	});
-
-	let titleParts = $derived(() => {
-		const currentTitle = calculatedTitle();
-		if (highlight && currentTitle.toLowerCase().includes(highlight.toLowerCase())) {
+	const titleParts = $derived(() => {
+		if (highlight && name.toLowerCase().includes(highlight.toLowerCase())) {
 			const regex = new RegExp(`(${highlight})`, 'gi');
-			return currentTitle.split(regex);
+			return name.split(regex);
 		}
-		return [currentTitle];
+		return [name];
 	});
 
-	function handleBackClick() {
-		const defaultBehavior = () => {
-			if (backUrl) goto(backUrl);
-			else window.history.back();
-		};
-		onBackClick ? onBackClick(defaultBehavior) : defaultBehavior();
-	}
-
-	// Improved throttle
-	function throttle<T extends (...args: any[]) => void>(func: T, limit: number): T {
-		let lastCall = 0;
-		return function (this: any, ...args: any[]) {
-			const now = Date.now();
-			if (now - lastCall >= limit) {
-				lastCall = now;
-				func.apply(this, args);
+	function handleBackClick(event: Event) {
+		const defaultBehavior: DefaultBehaviorFn = () => {
+			if (!backUrl) {
+				event.preventDefault();
+				window.history.back();
 			}
-		} as T;
-	}
+			// If backUrl exists, let the link handle navigation naturally
+		};
 
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const resizeHandler = throttle(() => {
-			windowWidth = window.innerWidth;
-		}, 100);
-		window.addEventListener('resize', resizeHandler);
-		return () => window.removeEventListener('resize', resizeHandler);
-	});
+		if (onBackClick) {
+			event.preventDefault();
+			onBackClick(defaultBehavior);
+		} else if (!backUrl) {
+			// No backUrl provided, use browser history
+			event.preventDefault();
+			window.history.back();
+		}
+		// Otherwise, let the <a> tag handle navigation with preloading
+	}
 </script>
 
-<canvas bind:this={canvas} width="2000" height="100" style="position: absolute; visibility: hidden;"></canvas>
-
-<div class="my-1 flex w-full items-center justify-between">
-	<div class="flex items-center">
+<div class="my-1 flex w-full min-w-0 items-center justify-between gap-4">
+	<div class="flex min-w-0 items-center">
 		{#if uiStateManager.uiState.value.leftSidebar === 'hidden'}
 			<button
 				type="button"
-				onclick={() => toggleUIElement('leftSidebar', screenSize() === 'LG' ? 'full' : 'collapsed')}
+				onclick={() => toggleUIElement('leftSidebar', isDesktop.value ? 'full' : 'collapsed')}
 				aria-label="Open Sidebar"
 				class="variant-ghost-surface btn-icon"
 			>
@@ -164,31 +124,46 @@
 			data-cms-type="text"
 		>
 			{#if icon}
-				<iconify-icon {icon} width={iconSize} class={`mr-1 ${iconColor} sm:mr-2`} aria-hidden="true"></iconify-icon>
+				<iconify-icon {icon} width={iconSize} class={`mr-1 shrink-0 ${iconColor} sm:mr-2`} aria-hidden="true"></iconify-icon>
 			{/if}
-			<span>
-				{#each titleParts() as part, i}
+
+			<span class:block={truncate} class:overflow-hidden={truncate} class:text-ellipsis={truncate} class:whitespace-nowrap={truncate}>
+				{#each titleParts() as part, i (i)}
 					<span class={i % 2 === 1 ? 'font-semibold text-tertiary-500 dark:text-primary-500' : ''}>
 						{part}
 					</span>
 				{/each}
 			</span>
+
 			<span class="sr-only absolute inset-0 overflow-hidden whitespace-normal">
 				{name}
 			</span>
 		</h1>
 	</div>
 	{#if showBackButton}
-		<button
-			onclick={handleBackClick}
-			aria-label="Go back"
-			tabindex="0"
-			onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && handleBackClick()}
-			class="variant-outline-tertiary btn-icon dark:variant-outline-primary"
-			style="min-width: 48px; min-height: 48px;"
-			data-cms-action="back"
-		>
-			<iconify-icon icon="ri:arrow-left-line" width="24" aria-hidden="true"></iconify-icon>
-		</button>
+		{#if backUrl}
+			<a
+				href={backUrl}
+				aria-label="Go back"
+				class="variant-outline-tertiary btn-icon shrink-0 dark:variant-outline-primary"
+				style="min-width: 48px; min-height: 48px;"
+				data-cms-action="back"
+				data-sveltekit-preload-data="hover"
+				onclick={(e) => handleBackClick(e)}
+			>
+				<iconify-icon icon="ri:arrow-left-line" width="24" aria-hidden="true"></iconify-icon>
+			</a>
+		{:else}
+			<button
+				onclick={(e) => handleBackClick(e)}
+				aria-label="Go back"
+				tabindex="0"
+				class="variant-outline-tertiary btn-icon shrink-0 dark:variant-outline-primary"
+				style="min-width: 48px; min-height: 48px;"
+				data-cms-action="back"
+			>
+				<iconify-icon icon="ri:arrow-left-line" width="24" aria-hidden="true"></iconify-icon>
+			</button>
+		{/if}
 	{/if}
 </div>

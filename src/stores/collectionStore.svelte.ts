@@ -1,5 +1,5 @@
 /**
- * @file src/stores/collectionStore.ts
+ * @file src/stores/collectionStore.svelte.ts
  * @description Manages the collection state
  *
  * Features:
@@ -9,88 +9,156 @@
  * 	- TypeScript support with custom Collection type
  */
 
-import { store } from '@utils/reactivity.svelte';
 import type { Schema } from '@src/content/types';
-import { StatusTypes } from '@src/content/types';
-import type { ContentNode } from '../databases/types';
-import { SvelteMap } from 'svelte/reactivity';
+// import { SvelteMap } from 'svelte/reactivity';
+import type { ContentNode } from '../content/types';
+import { logger } from '@utils/logger';
 
 // Define types
 type ModeType = 'view' | 'edit' | 'create' | 'delete' | 'modify' | 'media';
 
 // Widget interface
-interface Widget {
+export interface Widget {
 	permissions: Record<string, Record<string, boolean>>;
 	[key: string]: Record<string, Record<string, boolean>> | unknown;
 }
 
 // Status map for various collection states
-export const statusMap = StatusTypes;
+export const statusMap = {
+	publish: 'publish',
+	unpublish: 'unpublish',
+	draft: 'draft',
+	archived: 'archived'
+};
 
-// Create reactive stores
-export const collections = store<{ [uuid: string]: Schema }>({});
-export const collectionsById = store<SvelteMap<string, Schema>>(new SvelteMap());
-export const currentCollectionId = store<string | null>(null);
+// --- State using Svelte 5 Runes ---
+export const collections = $state<{ [uuid: string]: Schema }>({});
+// export const collectionsById = new SvelteMap<string, Schema>(); // Unused
+export const currentCollectionId = $state<string | null>(null);
+export const collectionsLoading = $state<boolean>(false);
+export const collectionsError = $state<string | null>(null);
+export const unAssigned = $state<Schema>({} as Schema);
 
-// Keep existing stores
-export const collectionsLoading = store<boolean>(false);
-export const collectionsError = store<string | null>(null);
-export const unAssigned = store<Schema>({} as Schema);
-export const collection = store<Schema | null>({} as Schema);
+// Wrapper objects for reassignable state (Svelte 5 requirement)
+let _collection = $state<Schema | null>(null);
+let _collectionValue = $state<Record<string, unknown>>({});
+let _mode = $state<ModeType>('view');
+let _modifyEntry = $state<(status?: keyof typeof statusMap) => Promise<void>>(() => Promise.resolve());
+let _targetWidget = $state<Widget>({ permissions: {} });
+let _contentStructure = $state<ContentNode[]>([]);
 
-// Create reactive state variables for collectionValue
-let collectionValueState = $state<Record<string, unknown>>({});
+export const collection = {
+	get value() {
+		return _collection;
+	},
+	set value(v) {
+		_collection = v;
+	}
+};
 export const collectionValue = {
 	get value() {
-		return collectionValueState;
+		return _collectionValue;
 	},
-	set: (newValue: Record<string, unknown>) => {
-		collectionValueState = newValue;
-	},
-	update: (fn: (value: Record<string, unknown>) => Record<string, unknown>) => {
-		const newValue = fn(collectionValueState);
-		collectionValueState = newValue;
+	set value(v) {
+		_collectionValue = v;
+		// Ensure status is set if not present
+		if (_collectionValue && !('status' in _collectionValue)) {
+			_collectionValue.status = _collection?.status ?? 'unpublish';
+		}
 	}
 };
-
-// Create reactive state variables for mode
-let modeState = $state<ModeType>('view');
 export const mode = {
 	get value() {
-		return modeState;
+		return _mode;
 	},
-	set: (newMode: ModeType) => {
-		modeState = newMode;
+	set value(v) {
+		logger.debug(`mode.value setter: ${_mode} -> ${v}`);
+		_mode = v;
+	}
+};
+export const modifyEntry = {
+	get value() {
+		return _modifyEntry;
 	},
-	update: (fn: (value: ModeType) => ModeType) => {
-		const newMode = fn(modeState);
-		modeState = newMode;
+	set value(v) {
+		_modifyEntry = v;
+	}
+};
+export const targetWidget = {
+	get value() {
+		return _targetWidget;
+	},
+	set value(v) {
+		_targetWidget = v;
+	}
+};
+export const contentStructure = {
+	get value() {
+		return _contentStructure;
+	},
+	set value(v) {
+		_contentStructure = v;
 	}
 };
 
-export const modifyEntry = store<(status?: keyof typeof statusMap) => Promise<void>>(() => Promise.resolve());
-export const selectedEntries = store<string[]>([]);
-export const targetWidget = store<Widget>({ permissions: {} });
+export const selectedEntries = $state<string[]>([]);
 
-export const contentStructure = store<ContentNode[]>([]);
+// --- Derived State (exported as functions per Svelte 5 requirements) ---
+export function getTotalCollections() {
+	return Object.keys(collections).length;
+}
 
-// Reactive calculations
-export const totalCollections = store(() => Object.keys(collections.value).length);
-export const hasSelectedEntries = store(() => selectedEntries.value.length > 0);
-export const currentCollectionName = store(() => collection.value?.name);
+export function getHasSelectedEntries() {
+	return selectedEntries.length > 0;
+}
 
-// Entry management
+export function getCurrentCollectionName() {
+	return _collection?.name;
+}
+
+// --- Entry Management ---
 export const entryActions = {
 	addEntry(entryId: string) {
-		selectedEntries.update((entries) => [...entries, entryId]);
+		if (!selectedEntries.includes(entryId)) {
+			selectedEntries.push(entryId);
+		}
 	},
 	removeEntry(entryId: string) {
-		selectedEntries.update((entries) => entries.filter((id) => id !== entryId));
+		const index = selectedEntries.indexOf(entryId);
+		if (index > -1) {
+			selectedEntries.splice(index, 1);
+		}
 	},
 	clear() {
-		selectedEntries.set([]);
+		selectedEntries.length = 0;
 	}
 };
+
+// --- Store Actions ---
+export function setCollection(newCollection: Schema | null) {
+	_collection = newCollection;
+}
+
+export function setMode(newMode: ModeType) {
+	logger.debug(`setMode called: ${_mode} -> ${newMode}`);
+	mode.value = newMode; // Use the setter to trigger UI updates
+}
+
+export function setCollectionValue(newValue: Record<string, unknown>) {
+	_collectionValue = newValue;
+}
+
+export function setModifyEntry(newFn: (status?: keyof typeof statusMap) => Promise<void>) {
+	_modifyEntry = newFn;
+}
+
+export function setContentStructure(newContentStructure: ContentNode[]) {
+	_contentStructure = newContentStructure;
+}
+
+export function setTargetWidget(newWidget: Widget) {
+	_targetWidget = newWidget;
+}
 
 // Type exports
 export type { ModeType };

@@ -20,16 +20,17 @@
 
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import type { ContentNodeOperation } from '@src/content/types';
-
 	// Simple ID generator (no need for crypto UUID)
 	function generateId(): string {
 		return Math.random().toString(36).substring(2, 15) + Date.now().toString(36);
 	}
 
+	// Logger
+	import { logger } from '@utils/logger';
+
 	// Stores
-	import { collectionValue, mode } from '@src/stores/collectionStore.svelte';
-	import { contentStructure } from '@root/src/stores/collectionStore.svelte';
+	import { setCollectionValue, setMode, setContentStructure, contentStructure } from '@src/stores/collectionStore.svelte';
+	import { setRouteContext } from '@src/stores/UIStore.svelte';
 
 	// Components
 	import PageTitle from '@components/PageTitle.svelte';
@@ -40,8 +41,16 @@
 	import * as m from '@src/paraglide/messages';
 
 	// Skeleton
-	import { getToastStore, getModalStore, type ModalSettings, type ModalComponent } from '@skeletonlabs/skeleton';
-	import type { ContentNode, DatabaseId, ISODateString } from '@root/src/databases/dbInterface';
+	import { type ModalSettings, type ModalComponent } from '@skeletonlabs/skeleton';
+	import { showToast } from '@utils/toast';
+	import { showModal } from '@utils/modalUtils';
+	import type { ContentNode, DatabaseId } from '@root/src/databases/dbInterface';
+	import type { ISODateString } from '@root/src/content/types';
+
+	interface NodeOperation {
+		type: 'create' | 'update' | 'move' | 'rename';
+		node: ContentNode;
+	}
 
 	interface CategoryModalResponse {
 		newCategoryName: string;
@@ -50,6 +59,8 @@
 
 	interface ApiResponse {
 		error?: string;
+		success?: boolean;
+		contentStructure?: ContentNode[];
 		[key: string]: any; // Allows for success, contentStructure, message
 	}
 
@@ -57,30 +68,33 @@
 		data: { contentStructure: ContentNode[] };
 	}
 
-	let { data }: CollectionBuilderProps = $props();
+	const { data }: CollectionBuilderProps = $props();
 
 	// `currentConfig` holds the live, mutable state of the content structure for the UI.
 	// It's initialized from `data.contentStructure` and updated by DnD operations.
-	let currentConfig: ContentNode[] = $state(data.contentStructure);
+	let currentConfig: ContentNode[] = $state([]);
 	// `nodesToSave` stores operations (create, update, move, rename) that need to be persisted to the backend.
-	let nodesToSave = $state<Record<string, ContentNodeOperation>>({});
+	let nodesToSave: Record<string, NodeOperation> = $state({});
+
+	$effect(() => {
+		if (data.contentStructure) {
+			currentConfig = data.contentStructure;
+		}
+	});
 
 	// State for UI feedback
 	let isLoading = $state(false);
-	let apiError = $state<string | null>(null);
-
-	const toastStore = getToastStore();
-	const modalStore = getModalStore();
+	let apiError: string | null = $state(null);
 
 	/**
 	 * Opens the modal for adding or editing a category.
-	 * @param existingCategory Optional ContentNode if editing an existing category.
+	 * @param existingCategory Optional Partial<DndItem> if editing an existing category.
 	 */
-	function modalAddCategory(existingCategory?: ContentNode): void {
+	function modalAddCategory(existingCategory?: Partial<ContentNode>): void {
 		const modalComponent: ModalComponent = {
 			ref: ModalCategory,
 			props: {
-				existingCategory
+				existingCategory: existingCategory as ContentNode | undefined
 			}
 		};
 
@@ -93,20 +107,19 @@
 				if (!response || typeof response === 'boolean') return;
 
 				try {
-					if (existingCategory) {
-						updateExistingCategory(existingCategory, response);
+					if (existingCategory && existingCategory._id) {
+						updateExistingCategory(existingCategory as ContentNode, response);
 					} else {
 						addNewCategory(response);
 					}
-					modalStore.close();
 				} catch (error) {
-					console.error('Error handling category modal response:', error);
+					logger.error('Error handling category modal response:', error);
 					showToast('Error updating categories', 'error');
 				}
 			}
 		};
 
-		modalStore.trigger(modalSettings);
+		showModal(modalSettings);
 	}
 
 	/**
@@ -215,8 +228,10 @@
 				nodesToSave = {};
 				// Re-sync `currentConfig` with the *actual* structure returned by the server
 				// This is crucial for consistency, especially after complex reorders.
-				contentStructure.set(result.contentStructure);
-				currentConfig = result.contentStructure;
+				if (result.contentStructure) {
+					setContentStructure(result.contentStructure);
+					currentConfig = result.contentStructure;
+				}
 				console.debug('API save successful. New contentStructure:', result.contentStructure);
 			} else {
 				// Revert currentConfig to the last known good state if save fails
@@ -224,7 +239,7 @@
 				throw new Error(result.error || 'Failed to update categories');
 			}
 		} catch (error) {
-			console.error('Error saving categories:', error);
+			logger.error('Error saving categories:', error);
 			showToast(error instanceof Error ? error.message : 'Failed to save categories', 'error');
 			apiError = error instanceof Error ? error.message : 'Unknown error occurred';
 		} finally {
@@ -232,10 +247,9 @@
 		}
 	}
 
-	// Navigates to the new collection creation page.
 	function handleAddCollectionClick(): void {
-		mode.set('create');
-		collectionValue.set({
+		setMode('create');
+		setCollectionValue({
 			name: 'new',
 			icon: '',
 			description: '',
@@ -246,24 +260,10 @@
 		goto('/config/collectionbuilder/new');
 	}
 
-	/**
-	 * Displays a toast notification.
-	 * @param message The message to display.
-	 * @param type The type of toast (success, info, error).
-	 */
-	function showToast(message: string, type: 'success' | 'info' | 'error' = 'info'): void {
-		const backgrounds = {
-			success: 'variant-filled-primary',
-			info: 'variant-filled-tertiary',
-			error: 'variant-filled-error'
-		};
-		toastStore.trigger({
-			message: message,
-			background: backgrounds[type],
-			timeout: 3000,
-			classes: 'border-1 !rounded-md'
-		});
-	}
+	$effect(() => {
+		setRouteContext({ isCollectionBuilder: true });
+		return () => setRouteContext({ isCollectionBuilder: false });
+	});
 </script>
 
 <PageTitle name={m.collection_pagetitle()} icon="fluent-mdl2:build-definition" showBackButton={true} backUrl="/config" />
@@ -290,7 +290,7 @@
 		disabled={isLoading}
 	>
 		<iconify-icon icon="material-symbols:category" width="18"></iconify-icon>
-		{m.collection_addcollection()}
+		{m.collection_add()}
 	</button>
 
 	<!-- Save Button -->
@@ -313,7 +313,7 @@
 <div class="max-h-[calc(100vh-65px)] overflow-auto">
 	<div class="wrapper mb-2">
 		<p class="mb-4 text-center dark:text-primary-500">
-			{m.collection_text_description()}
+			{m.collection_description()}
 		</p>
 
 		<Board contentNodes={currentConfig ?? []} onNodeUpdate={handleNodeUpdate} onEditCategory={modalAddCategory} />

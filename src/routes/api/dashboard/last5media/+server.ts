@@ -5,7 +5,7 @@
 
 import type { RequestHandler } from './$types';
 import { error, json } from '@sveltejs/kit';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Database
 // import { dbAdapter } from '@src/databases/db';
@@ -13,7 +13,7 @@ import { privateEnv } from '@root/config/private';
 // Auth
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Validation
 import * as v from 'valibot';
@@ -41,7 +41,7 @@ export const GET: RequestHandler = async ({ locals }) => {
 	}
 
 	try {
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant could not be identified for this operation.');
 		}
 
@@ -56,16 +56,12 @@ export const GET: RequestHandler = async ({ locals }) => {
 			return json([]);
 		}
 
-		// --- MULTI-TENANCY: Scope the query by tenantId ---
-		const filter = privateEnv.MULTI_TENANT ? { tenantId } : {};
-
 		// Use database-agnostic adapter to get recent media files
 		const result = await dbAdapter.media.files.getByFolder(undefined, {
 			page: 1,
 			pageSize: 5,
 			sortField: 'updatedAt',
-			sortDirection: 'desc',
-			filter
+			sortDirection: 'desc'
 		});
 
 		if (!result.success) {
@@ -85,14 +81,20 @@ export const GET: RequestHandler = async ({ locals }) => {
 		}
 
 		// Transform the data to match the expected format
-		const recentMedia = result.data.items.map((file) => ({
-			name: file.filename || file.name || 'Unknown',
-			size: file.size || 0,
-			modified: new Date(file.updatedAt || file.modified || new Date()),
-			type: (file.mimeType || file.type || 'unknown').split('/')[1] || 'unknown',
-			url: file.path || file.url || ''
-		}));
+		let items = result.data.items;
 
+		// --- MULTI-TENANCY: Filter by tenantId if enabled ---
+		if (getPrivateSettingSync('MULTI_TENANT') && tenantId) {
+			items = items.filter((file) => (file as unknown as Record<string, unknown>).tenantId === tenantId);
+		}
+
+		const recentMedia = items.map((file) => ({
+			name: file.filename || 'Unknown',
+			size: file.size || 0,
+			modified: new Date(file.updatedAt),
+			type: file.mimeType.split('/')[1] || 'unknown',
+			url: file.path || ''
+		}));
 		const validatedData = v.parse(v.array(MediaItemSchema), recentMedia);
 
 		logger.info('Recent media fetched successfully via database adapter', {

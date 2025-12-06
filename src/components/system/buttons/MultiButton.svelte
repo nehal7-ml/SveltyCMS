@@ -3,80 +3,79 @@
 @component
 **MultiButton component**
 
-Features:
-- Conditional rendering of buttons based on modifyEntry
-- Dynamic button rendering based on provided buttons object
+@example
+<MultiButton buttons={buttons} defaultButton={defaultButton} />
 
+### Props
+- `buttons?: Record<string, { fn: () => void; icon: string; bg_color: string; color: string; }>;` - An optional object defining multiple buttons with their respective functions, icons, background colors, and text colors.
+- `defaultButton?: string;` - The key of the default button to display prominently.
+- `on:create?: () => void;` - Event handler for the 'Create' button.
+- `on:delete?: () => void;` - Event handler for the 'Delete' button.
+- `on:publish?: () => void;` - Event handler for the 'Publish' button.
+- `on:unpublish?: () => void;` - Event handler for the 'Unpublish' button.
+- `on:test?: () => void;` - Event handler for the 'Test' button.
+
+### Features
+- **Dynamic Button Actions**: Each button can have its own function, icon, background color, and text color.
+- **Expandable Menu**: The component can expand to show additional buttons when in 'modify' mode.
+- **Customizable Appearance**: Buttons can be styled individually based on provided properties.
+- **Event Handler Decoupling**: Button actions can be defined externally and passed in as props for better modularity.
 -->
 
 <script lang="ts">
+	import { logger } from '@utils/logger';
+
 	// Stores
-	import { mode } from '@root/src/stores/collectionStore.svelte';
+	import { mode, setMode } from '@root/src/stores/collectionStore.svelte';
 
 	// Props
-	const props = $props<{
-		buttons?: Record<
-			string,
-			{
-				fn: () => void;
-				icon: string;
-				bg_color: string;
-				color: string;
-			}
-		>;
-		defaultButton?: string;
-		// Event handler props for decoupling
-		'on:create'?: () => void;
-		'on:delete'?: () => void;
-		'on:publish'?: () => void;
-		'on:unpublish'?: () => void;
-		'on:test'?: () => void;
-	}>();
+	const props = $props();
+	// Event handler props for decoupling
 
 	// The default functions now call the event handlers passed in as props.
 	const defaultButtons = {
 		Create: {
-			fn: props['on:create'] || (() => mode.set('create')),
+			fn: props['on:create'] || (() => setMode('create')),
 			icon: 'gravity-ui:plus',
 			bg_color: '#15d515',
 			color: 'white'
 		},
 		Delete: {
-			fn: props['on:delete'] || (() => console.warn('Delete handler not provided')),
+			fn: props['on:delete'] || (() => logger.warn('Delete handler not provided')),
 			icon: 'tdesign:delete-1',
 			bg_color: 'red',
 			color: 'white'
 		},
 		Publish: {
-			fn: props['on:publish'] || (() => console.warn('Publish handler not provided')),
+			fn: props['on:publish'] || (() => logger.warn('Publish handler not provided')),
 			icon: '',
 			bg_color: 'lime',
 			color: 'white'
 		},
 		Unpublish: {
-			fn: props['on:unpublish'] || (() => console.warn('Unpublish handler not provided')),
+			fn: props['on:unpublish'] || (() => logger.warn('Unpublish handler not provided')),
 			icon: '',
 			bg_color: 'orange',
 			color: 'white'
 		},
 		Test: {
-			fn: props['on:test'] || (() => console.warn('Test handler not provided')),
+			fn: props['on:test'] || (() => logger.warn('Test handler not provided')),
 			icon: '',
 			bg_color: 'brown',
 			color: 'white'
 		}
 	};
 
-	let buttons = $state(props.buttons || defaultButtons);
+	const buttons = $state(props.buttons || defaultButtons);
 	let expanded = $state(false);
 
-	let defaultButton = $derived(props.defaultButton || (mode.value === 'modify' ? 'Delete' : 'Create'));
+	const defaultButton = $derived(props.defaultButton || (mode.value === 'modify' ? 'Delete' : 'Create'));
 
 	$effect(() => {
 		expanded = mode.value === 'modify' ? expanded : false;
 	});
 
-	let activeArrow = $derived(mode.value === 'modify');
+	const activeArrow = $derived(mode.value === 'modify');
 
 	function toggleExpanded() {
 		expanded = !expanded;

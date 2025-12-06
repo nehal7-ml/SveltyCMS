@@ -20,7 +20,12 @@ import { join } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
+
+// Cache for discovered widgets
+let cachedWidgets: WidgetInfo[] | null = null;
+const WIDGET_CACHE_TTL = 1000 * 60 * 5; // 5 minutes
+let lastCacheTime = 0;
 
 interface WidgetInfo {
 	componentName: string;
@@ -57,6 +62,11 @@ async function getWidgetMetadata(componentName: string): Promise<WidgetInfo> {
 }
 
 async function discoverWidgets(): Promise<WidgetInfo[]> {
+	// Return cached widgets if valid
+	if (cachedWidgets && Date.now() - lastCacheTime < WIDGET_CACHE_TTL && process.env.NODE_ENV === 'production') {
+		return cachedWidgets;
+	}
+
 	try {
 		const widgetsPath = join(process.cwd(), 'src/routes/(app)/dashboard/widgets');
 		const files = readdirSync(widgetsPath, { withFileTypes: true });
@@ -71,7 +81,12 @@ async function discoverWidgets(): Promise<WidgetInfo[]> {
 		const widgets = await Promise.all(widgetPromises);
 		const sortedWidgets = widgets.sort((a, b) => a.name.localeCompare(b.name));
 
-		logger.debug(`Discovered ${sortedWidgets.length} dashboard widgets`);
+		logger.trace(`Discovered ${sortedWidgets.length} dashboard widgets`);
+
+		// Update cache
+		cachedWidgets = sortedWidgets;
+		lastCacheTime = Date.now();
+
 		return sortedWidgets;
 	} catch (err) {
 		logger.error('Failed to discover widgets:', err);
@@ -80,19 +95,28 @@ async function discoverWidgets(): Promise<WidgetInfo[]> {
 }
 
 export const load: PageServerLoad = async ({ locals }) => {
-	const { user, isAdmin, hasManageUsersPermission, permissions, roles } = locals;
+	const { user, isAdmin, roles: tenantRoles } = locals;
 	if (!user) {
 		logger.warn('User not authenticated, redirecting to login.');
 		throw redirect(301, '/login');
 	}
 
-	// Ensure only admins can access the dashboard
-	if (!isAdmin) {
-		logger.warn(`Non-admin user (${user.email}) attempted to access the dashboard. Redirecting.`);
-		throw redirect(302, '/'); // Redirect to home page or an access-denied page
+	// Check if user has permission to access dashboard
+	const hasDashboardPermission =
+		isAdmin ||
+		tenantRoles.some((role) =>
+			role.permissions?.some((p) => {
+				const [resource, action] = p.split(':');
+				return resource === 'dashboard' && action === 'read';
+			})
+		);
+
+	if (!hasDashboardPermission) {
+		logger.warn(`User ${user._id} (${user.email}) does not have permission to access dashboard. Redirecting.`);
+		throw error(403, 'Insufficient permissions to access dashboard');
 	}
 
-	logger.debug(`Admin user authenticated successfully: \x1b[34m${user._id}\x1b[0m`);
+	logger.trace(`User authenticated successfully for dashboard: ${user._id}`);
 
 	const { _id, ...rest } = user;
 	const availableWidgets = await discoverWidgets();
@@ -103,10 +127,7 @@ export const load: PageServerLoad = async ({ locals }) => {
 				id: _id.toString(),
 				...rest
 			},
-			isAdmin,
-			hasManageUsersPermission,
-			permissions,
-			roles
+			isAdmin
 		},
 		availableWidgets
 	};
@@ -144,7 +165,7 @@ export const actions: Actions = {
 			resizable: true
 		};
 
-		logger.debug(`Created widget ${widget.id} for user ${userId}`);
+		logger.trace(`Created widget ${widget.id} for user ${userId}`);
 		return json(widget);
 	}
 };

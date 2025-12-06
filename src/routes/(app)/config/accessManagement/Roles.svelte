@@ -18,78 +18,47 @@ It provides the following functionality:
 
 <script lang="ts">
 	// Store
-	import { page } from '$app/state';
 
 	// Auth
-	import type { Role, Permission } from '@src/auth/types';
-
+	import type { Role } from '@src/databases/auth/types';
 	// Components
-	import Loading from '@components/Loading.svelte';
 	import RoleModal from './RoleModal.svelte';
-
 	// Skeleton
-	import { getToastStore, getModalStore, type ModalSettings, type PopupSettings, popup } from '@skeletonlabs/skeleton';
-
-	const toastStore = getToastStore();
-	const modalStore = getModalStore();
-
+	import { getModalStore, popup, type ModalSettings, type PopupSettings } from '@skeletonlabs/skeleton';
+	import { showToast } from '@utils/toast';
 	// Svelte DND-actions
 	import { dndzone } from 'svelte-dnd-action';
 	import { v4 as uuidv4 } from 'uuid';
 
 	const flipDurationMs = 100;
+	const modalStore = getModalStore();
 
-	let { roleData, setRoleData, updateModifiedCount } = $props();
+	const { roleData, setRoleData, updateModifiedCount } = $props();
 
 	// Reactive state
-	let roles = $state<Role[]>([]);
-	let availablePermissions = $state<Permission[]>([]);
-	let selectedPermissions = $state<string[]>([]);
-	let selectedRoles = $state<Set<string>>(new Set());
-	let isLoading = $state(true);
-	let error = $state<string | null>(null);
-	let modifiedRoles = $state(new Set<string>());
-	let items = $state<Role[]>([]);
+	let roles: Role[] = $state([]);
+	let selectedPermissions: string[] = $state([]);
+	let selectedRoles = $state(new Set());
+	const error = $state<string | null>(null);
+	const modifiedRoles = $state(new Set());
+	// Define DndItem type for dndzone compatibility
+	type DndItem = Role & { id: string };
+	let items: DndItem[] = $state([]);
 
 	// Modal state
 	let isEditMode = $state(false);
-	let currentRoleId = $state<string | null>(null);
+	let currentRoleId: string | null = $state(null);
 	let currentGroupName = $state('');
 
-	// Initialize data when component mounts
+	// Initialize data when component mounts (run once)
 	$effect(() => {
-		loadData();
-	});
-
-	const loadData = async () => {
-		try {
-			await loadRoleGroups();
-			await loadPermissions();
-		} catch (err) {
-			error = `Failed to initialize: ${err instanceof Error ? err.message : String(err)}`;
-		} finally {
-			isLoading = false;
-		}
-	};
-
-	const loadRoleGroups = async () => {
-		try {
-			// Add id property for dndzone while keeping _id for data
+		// Only initialize if data hasn't been loaded yet
+		if (roles.length === 0 && roleData.length > 0) {
 			const rolesWithId = roleData.map((role: Role) => ({ ...role, id: role._id }));
 			roles = rolesWithId;
 			items = rolesWithId;
-		} catch (err) {
-			error = `Failed to load roles: ${err instanceof Error ? err.message : String(err)}`;
 		}
-	};
-
-	const loadPermissions = async () => {
-		try {
-			availablePermissions = page.data.permissions;
-		} catch (err) {
-			error = `Failed to load permissions: ${err instanceof Error ? err.message : String(err)}`;
-		}
-	};
+	});
 
 	const openModal = (role: Role | null = null, groupName = '') => {
 		isEditMode = !!role;
@@ -164,21 +133,6 @@ It provides the following functionality:
 		}
 	};
 
-	// Show corresponding Toast messages
-	function showToast(message: string, type: 'success' | 'error' | 'info' = 'info') {
-		const backgrounds = {
-			success: 'variant-filled-primary',
-			info: 'variant-filled-tertiary',
-			error: 'variant-filled-error'
-		};
-		toastStore.trigger({
-			message: message,
-			background: backgrounds[type],
-			timeout: 3000,
-			classes: 'border-1 !rounded-md'
-		});
-	}
-
 	const deleteSelectedRoles = async () => {
 		for (const roleId of selectedRoles) {
 			const index = items.findIndex((cur: { _id: string }) => cur._id === roleId);
@@ -210,20 +164,16 @@ It provides the following functionality:
 		selectedRoles = newSelection;
 	};
 
-	// Types for DND events
-	type DndItem = Role & { id: string };
+	// DndItem type already defined above
 
-	function handleSort(
-		e: CustomEvent<{
-			items: DndItem[];
-			info: {
-				id: number;
-			};
-		}>
-	) {
+	function handleSort(e: CustomEvent) {
 		items = [...e.detail.items];
 		roles = items;
-		modifiedRoles.add(e.detail.items[e.detail.info.id]._id);
+		// Find the item that was moved by id
+		const movedItem = e.detail.items.find((item: DndItem) => item.id === e.detail.info.id);
+		if (movedItem) {
+			modifiedRoles.add(movedItem._id);
+		}
 
 		// Remove id property when sending data to parent
 		const cleanedItems = items.map(({ id, ...item }: { id: string; [key: string]: any }) => item);
@@ -235,17 +185,14 @@ It provides the following functionality:
 		}
 	}
 
-	function handleFinalize(
-		e: CustomEvent<{
-			items: DndItem[];
-			info: {
-				id: number;
-			};
-		}>
-	) {
+	function handleFinalize(e: CustomEvent) {
 		items = [...e.detail.items];
 		roles = items;
-		modifiedRoles.add(e.detail.items[e.detail.info.id]._id);
+		// Find the item that was moved by id
+		const movedItem = e.detail.items.find((item: DndItem) => item.id === e.detail.info.id);
+		if (movedItem) {
+			modifiedRoles.add(movedItem._id);
+		}
 
 		// Remove id property when sending data to parent
 		const cleanedItems = items.map(({ id, ...item }: { id: string; [key: string]: any }) => item);
@@ -266,9 +213,7 @@ It provides the following functionality:
 	}
 </script>
 
-{#if isLoading}
-	<Loading customTopText="Loading Roles..." customBottomText="" />
-{:else if error}
+{#if error}
 	<p class="error">{error}</p>
 {:else}
 	<h3 class="mb-2 text-center text-xl font-bold">Roles Management:</h3>

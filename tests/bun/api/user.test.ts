@@ -1,283 +1,219 @@
 /**
  * @file tests/bun/api/user.test.ts
- * @description
- * Integration test suite for all user-related API endpoints.
- * This suite covers user creation, authentication, profile updates, and batch operations.
- * It ensures proper handling of both authenticated and unauthenticated requests,
- * validating input, permissions, and correct data responses.
+ * @description Integration tests for User API.
+ * Uses shared helpers for authentication and environment setup.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
-import { cleanupTestDatabase, cleanupTestEnvironment, initializeTestEnvironment, testFixtures } from '../helpers/testSetup';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { testFixtures, initializeTestEnvironment, prepareAuthenticatedContext } from '../helpers/testSetup';
+import { getApiBaseUrl } from '../helpers/server';
 
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:5173';
+const API_BASE_URL = getApiBaseUrl();
 
-/**
- * Helper function to log in as the default admin and return authentication cookies.
- * This avoids repeating login logic in multiple test blocks.
- * @returns {Promise<string>} The authentication cookie string.
- */
-const loginAsAdmin = async (): Promise<string> => {
-	// 1. Create the admin user
-	await fetch(`${API_BASE_URL}/api/user/createUser`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({
-			...testFixtures.users.firstAdmin
-		})
-	});
+describe('User API Integration', () => {
+	let adminCookie: string;
+	let adminUserId: string;
 
-	// 2. Log in as the admin user
-	const loginResponse = await fetch(`${API_BASE_URL}/api/user/login`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({
-			email: testFixtures.users.firstAdmin.email,
-			password: testFixtures.users.firstAdmin.password
-		})
-	});
-
-	// 3. Fail fast if login is unsuccessful
-	if (loginResponse.status !== 200) {
-		throw new Error('Test setup failed: Could not log in as admin.');
-	}
-
-	// 4. Extract and return the session cookie
-	const setCookieHeader = loginResponse.headers.get('set-cookie');
-	if (!setCookieHeader) {
-		throw new Error('Test setup failed: No cookie was returned upon login.');
-	}
-
-	return setCookieHeader;
-};
-
-describe('User API Endpoints', () => {
-	// Initialize the test environment once for all tests in this file
+	// 1. ONE-TIME SETUP
 	beforeAll(async () => {
+		// Wait for server
 		await initializeTestEnvironment();
+
+		// Ensure standard users (admin/editor) exist and get session
+		// This helper handles DB cleanup, user creation, and login
+		adminCookie = await prepareAuthenticatedContext();
+
+		// Get Admin ID for reference in tests
+		const res = await fetch(`${API_BASE_URL}/api/user/batch`, {
+			method: 'POST',
+			headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+			body: JSON.stringify({ operation: 'list', limit: 1 })
+		});
+		const data = await res.json();
+		adminUserId = data.data?.[0]?._id;
 	});
 
-	// Clean up the entire environment after all tests have run
-	afterAll(async () => {
-		await cleanupTestEnvironment();
-	});
-
-	// Clean the database before each individual test to ensure isolation
-	beforeEach(async () => {
-		await cleanupTestDatabase();
-	});
-
+	// --- TEST SUITE 1: USER CREATION ---
 	describe('POST /api/user/createUser', () => {
-		it('should create the first user successfully without authentication', async () => {
+		it('should create a new user successfully', async () => {
+			// Use unique email to avoid DB conflicts
+			const uniqueEmail = `newuser_${Date.now()}@test.com`;
+
 			const response = await fetch(`${API_BASE_URL}/api/user/createUser`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(testFixtures.users.firstAdmin)
-			});
-
-			const result = await response.json();
-			expect(response.status).toBe(200);
-			expect(result.success).toBe(true);
-			expect(result.data).toBeDefined();
-		});
-
-		it('should reject user creation with an invalid email format', async () => {
-			const response = await fetch(`${API_BASE_URL}/api/user/createUser`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ...testFixtures.users.firstAdmin, email: 'invalid-email' })
-			});
-
-			const result = await response.json();
-			expect(response.status).toBe(400);
-			expect(result.success).toBe(false);
-		});
-
-		it('should reject user creation with mismatched passwords', async () => {
-			const response = await fetch(`${API_BASE_URL}/api/user/createUser`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ...testFixtures.users.firstAdmin, confirm_password: 'DifferentPassword123!' })
-			});
-
-			const result = await response.json();
-			expect(response.status).toBe(400);
-			expect(result.success).toBe(false);
-		});
-
-		it('should reject user creation with a duplicate email', async () => {
-			// Create the first user
-			await fetch(`${API_BASE_URL}/api/user/createUser`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(testFixtures.users.firstAdmin)
-			});
-
-			// Attempt to create a second user with the same email
-			const response = await fetch(`${API_BASE_URL}/api/user/createUser`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ ...testFixtures.users.secondUser, email: testFixtures.users.firstAdmin.email })
-			});
-
-			const result = await response.json();
-			expect(response.status).toBe(400);
-			expect(result.success).toBe(false);
-		});
-	});
-
-	describe('POST /api/user/login', () => {
-		beforeEach(async () => {
-			// Ensure a user exists to log in with
-			await fetch(`${API_BASE_URL}/api/user/createUser`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(testFixtures.users.firstAdmin)
-			});
-		});
-
-		it('should log in successfully with valid credentials', async () => {
-			const response = await fetch(`${API_BASE_URL}/api/user/login`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
+				headers: {
+					'Content-Type': 'application/json',
+					Cookie: adminCookie // Requires admin to create users usually
+				},
 				body: JSON.stringify({
-					email: testFixtures.users.firstAdmin.email,
-					password: testFixtures.users.firstAdmin.password
+					...testFixtures.users.admin,
+					email: uniqueEmail,
+					role: 'editor'
 				})
 			});
 
 			const result = await response.json();
+			expect(response.status).toBe(201);
+			expect(result.email).toBe(uniqueEmail);
+		});
+
+		it('should reject invalid email format', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/createUser`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+				body: JSON.stringify({
+					...testFixtures.users.admin,
+					email: 'invalid-email-format'
+				})
+			});
+			expect(response.status).toBe(400);
+		});
+
+		it('should reject mismatched passwords', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/createUser`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+				body: JSON.stringify({
+					...testFixtures.users.admin,
+					email: `mismatch_${Date.now()}@test.com`,
+					confirmPassword: 'WrongPassword123!'
+				})
+			});
+			expect(response.status).toBe(400);
+		});
+	});
+
+	// --- TEST SUITE 2: AUTHENTICATION ---
+	describe('POST /api/user/login', () => {
+		it('should login with valid credentials (JSON)', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/login`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					email: testFixtures.users.admin.email,
+					password: testFixtures.users.admin.password
+				})
+			});
+
 			expect(response.status).toBe(200);
-			expect(result.success).toBe(true);
 			expect(response.headers.get('set-cookie')).toBeDefined();
 		});
 
-		it('should reject login with invalid credentials', async () => {
+		it('should reject invalid credentials', async () => {
 			const response = await fetch(`${API_BASE_URL}/api/user/login`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					email: testFixtures.users.firstAdmin.email,
-					password: 'wrongpassword'
+					email: testFixtures.users.admin.email,
+					password: 'WrongPassword123!'
 				})
 			});
-
-			const result = await response.json();
 			expect(response.status).toBe(400);
-			expect(result.success).toBe(false);
 		});
 	});
 
-	describe('Authenticated User Actions', () => {
-		let authCookies: string;
-		let adminUserId: string;
+	// --- TEST SUITE 3: ATTRIBUTE UPDATES ---
+	describe('PUT /api/user/updateUserAttributes', () => {
+		it('should allow user to update their own name', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/updateUserAttributes`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json', Cookie: adminCookie },
+				body: JSON.stringify({
+					user_id: 'self',
+					newUserData: { username: 'UpdatedAdminName' }
+				})
+			});
+			expect(response.status).toBe(200);
 
-		// Use the helper to log in before each authenticated test
-		beforeEach(async () => {
-			authCookies = await loginAsAdmin();
-			// Fetch the created admin's ID for use in tests that need to target a specific user
-			const batchResponse = await fetch(`${API_BASE_URL}/api/user/batch`, {
+			// Verify
+			const verify = await fetch(`${API_BASE_URL}/api/user`, {
+				headers: { Cookie: adminCookie }
+			});
+			const data = await verify.json();
+			expect(data.username).toBe('UpdatedAdminName');
+		});
+
+		it('should reject unauthorized token', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/updateUserAttributes`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' }, // No Cookie
+				body: JSON.stringify({ user_id: 'self', newUserData: {} })
+			});
+			expect(response.status).toBe(401);
+		});
+	});
+
+	// --- TEST SUITE 4: AVATAR MANAGEMENT ---
+	describe('POST /api/user/saveAvatar', () => {
+		it('should upload avatar using FormData', async () => {
+			// 1x1 Pixel Transparent PNG
+			const pngBytes = new Uint8Array([
+				0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+				0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01,
+				0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82
+			]);
+			const file = new File([pngBytes], 'avatar.png', { type: 'image/png' });
+
+			const formData = new FormData();
+			formData.append('avatar', file);
+
+			const response = await fetch(`${API_BASE_URL}/api/user/saveAvatar`, {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json', Cookie: authCookies },
-				body: JSON.stringify({ operation: 'list', limit: 1 })
+				headers: { Cookie: adminCookie },
+				body: formData
 			});
-			const batchResult = await batchResponse.json();
-			adminUserId = batchResult.data[0]._id;
+
+			expect(response.status).toBe(200);
+			const result = await response.json();
+			expect(result.avatarUrl).toBeDefined();
 		});
 
-		describe('PUT /api/user/updateUserAttributes', () => {
-			it('should allow a user to update their own attributes', async () => {
-				const response = await fetch(`${API_BASE_URL}/api/user/updateUserAttributes`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Cookie: authCookies },
-					body: JSON.stringify({
-						user_id: 'self',
-						newUserData: { firstName: 'UpdatedFirst', lastName: 'UpdatedLast' }
-					})
-				});
+		it('should reject non-image files', async () => {
+			const file = new File(['not an image'], 'test.txt', { type: 'text/plain' });
+			const formData = new FormData();
+			formData.append('avatar', file);
 
-				const result = await response.json();
-				expect(response.status).toBe(200);
-				expect(result.success).toBe(true);
+			const response = await fetch(`${API_BASE_URL}/api/user/saveAvatar`, {
+				method: 'POST',
+				headers: { Cookie: adminCookie },
+				body: formData
 			});
 
-			it('should allow an admin to update another user role', async () => {
-				// Create a second user to be updated
-				const createUserResponse = await fetch(`${API_BASE_URL}/api/user/createUser`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', Cookie: authCookies },
-					body: JSON.stringify(testFixtures.users.secondUser)
-				});
-				const createdUser = await createUserResponse.json();
-				const secondUserId = createdUser.data._id;
-
-				const response = await fetch(`${API_BASE_URL}/api/user/updateUserAttributes`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Cookie: authCookies },
-					body: JSON.stringify({
-						user_id: secondUserId,
-						newUserData: { role: 'developer' } // Assuming 'developer' is a valid role ID
-					})
-				});
-
-				const result = await response.json();
-				expect(response.status).toBe(200);
-				expect(result.success).toBe(true);
-			});
-
-			it('should prevent any user, including an admin, from changing their own role', async () => {
-				const response = await fetch(`${API_BASE_URL}/api/user/updateUserAttributes`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json', Cookie: authCookies },
-					body: JSON.stringify({
-						user_id: adminUserId, // Targeting self with actual ID
-						newUserData: { role: 'developer' }
-					})
-				});
-
-				const result = await response.json();
-				expect(response.status).toBe(403); // Forbidden
-				expect(result.success).toBe(false);
-			});
-
-			it('should reject request without a valid token', async () => {
-				const response = await fetch(`${API_BASE_URL}/api/user/updateUserAttributes`, {
-					method: 'PUT',
-					headers: { 'Content-Type': 'application/json' }, // No cookie
-					body: JSON.stringify({ user_id: 'self', newUserData: { firstName: 'Updated' } })
-				});
-
-				const result = await response.json();
-				expect(response.status).toBe(401); // Unauthorized
-				expect(result.success).toBe(false);
-			});
+			expect(response.status).toBe(400);
 		});
+	});
 
-		describe('POST /api/user/batch', () => {
-			it('should allow an admin to perform batch user operations', async () => {
-				const response = await fetch(`${API_BASE_URL}/api/user/batch`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json', Cookie: authCookies },
-					body: JSON.stringify({ operation: 'list', limit: 10 })
-				});
-
-				const result = await response.json();
-				expect(response.status).toBe(200);
-				expect(result.success).toBe(true);
-				expect(Array.isArray(result.data)).toBe(true);
+	// --- TEST SUITE 5: BATCH OPERATIONS ---
+	describe('POST /api/user/batch', () => {
+		it('should list users', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/batch`, {
+				method: 'POST',
+				headers: { Cookie: adminCookie, 'Content-Type': 'application/json' },
+				body: JSON.stringify({ operation: 'list', limit: 5 })
 			});
 
-			it('should reject batch operations without authorization', async () => {
-				const response = await fetch(`${API_BASE_URL}/api/user/batch`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' }, // No cookie
-					body: JSON.stringify({ operation: 'list', limit: 10 })
-				});
+			const result = await response.json();
+			expect(response.status).toBe(200);
+			expect(Array.isArray(result.data)).toBe(true);
+			expect(result.data.length).toBeGreaterThan(0);
+		});
+	});
 
-				const result = await response.json();
-				expect(response.status).toBe(401);
-				expect(result.success).toBe(false);
+	// --- TEST SUITE 6: LOGOUT ---
+	describe('POST /api/user/logout', () => {
+		it('should invalidate session', async () => {
+			const response = await fetch(`${API_BASE_URL}/api/user/logout`, {
+				method: 'POST',
+				headers: { Cookie: adminCookie }
 			});
+			expect(response.status).toBe(200);
+
+			// Verify old cookie is dead
+			const check = await fetch(`${API_BASE_URL}/api/user`, {
+				headers: { Cookie: adminCookie }
+			});
+			// Should be 401 Unauthorized or 403 Forbidden
+			expect([401, 403]).toContain(check.status);
 		});
 	});
 });

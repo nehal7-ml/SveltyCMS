@@ -7,61 +7,25 @@
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
-import { cleanupTestDatabase, cleanupTestEnvironment, initializeTestEnvironment, testFixtures } from '../helpers/testSetup';
+import { prepareAuthenticatedContext, cleanupTestDatabase } from '../helpers/testSetup';
+import { getApiBaseUrl, waitForServer } from '../helpers/server';
 
-const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:5173';
-
-/**
- * Helper function to create an admin user, log in, and return the auth token.
- * @returns {Promise<string>} The authorization bearer token.
- */
-const loginAsAdminAndGetToken = async (): Promise<string> => {
-	// Create the admin user
-	await fetch(`${API_BASE_URL}/api/user/createUser`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(testFixtures.users.firstAdmin)
-	});
-
-	// Log in as the admin user
-	const loginResponse = await fetch(`${API_BASE_URL}/api/user/login`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({
-			email: testFixtures.users.firstAdmin.email,
-			password: testFixtures.users.firstAdmin.password
-		})
-	});
-
-	if (loginResponse.status !== 200) {
-		throw new Error('Test setup failed: Could not log in as admin.');
-	}
-
-	const loginResult = await loginResponse.json();
-	const token = loginResult.data?.token;
-
-	if (!token) {
-		throw new Error('Test setup failed: Auth token was not found in login response.');
-	}
-
-	return token;
-};
+const API_BASE_URL = getApiBaseUrl();
 
 describe('System & Dashboard API Endpoints', () => {
-	let authToken: string;
+	let authCookie: string;
 
 	beforeAll(async () => {
-		await initializeTestEnvironment();
+		await waitForServer();
 	});
 
 	afterAll(async () => {
-		await cleanupTestEnvironment();
+		await cleanupTestDatabase();
 	});
 
-	// Before each test, clean the DB and get a fresh admin token.
+	// Before each test, clean the DB and get a fresh admin session
 	beforeEach(async () => {
-		await cleanupTestDatabase();
-		authToken = await loginAsAdminAndGetToken();
+		authCookie = await prepareAuthenticatedContext();
 	});
 
 	// Helper to test authenticated GET endpoints
@@ -69,7 +33,7 @@ describe('System & Dashboard API Endpoints', () => {
 		describe(`GET ${endpoint}`, () => {
 			it('should succeed with admin authentication', async () => {
 				const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-					headers: { Authorization: `Bearer ${authToken}` }
+					headers: { Cookie: authCookie }
 				});
 				expect(response.status).toBe(200);
 				const result = await response.json();
@@ -101,7 +65,7 @@ describe('System & Dashboard API Endpoints', () => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Authorization: `Bearer ${authToken}`
+						Cookie: authCookie
 					},
 					body: JSON.stringify({ siteName: 'Updated Site Name' })
 				});
@@ -137,7 +101,7 @@ describe('System & Dashboard API Endpoints', () => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Authorization: `Bearer ${authToken}`
+						Cookie: authCookie
 					},
 					body: JSON.stringify({ theme: 'dark' })
 				});
@@ -164,7 +128,7 @@ describe('System & Dashboard API Endpoints', () => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Authorization: `Bearer ${authToken}`
+						Cookie: authCookie
 					},
 					body: JSON.stringify({ userId: 'test-user-id', permissions: ['read', 'write'] })
 				});
@@ -186,7 +150,7 @@ describe('System & Dashboard API Endpoints', () => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Authorization: `Bearer ${authToken}`
+						Cookie: authCookie
 					},
 					body: JSON.stringify({ permissions: ['read'] }) // Missing userId
 				});
@@ -202,7 +166,7 @@ describe('System & Dashboard API Endpoints', () => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Authorization: `Bearer ${authToken}`
+						Cookie: authCookie
 					},
 					body: JSON.stringify({ to: 'test@example.com', subject: 'Test', html: '<p>Test</p>' })
 				});
@@ -228,7 +192,7 @@ describe('System & Dashboard API Endpoints', () => {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
-						Authorization: `Bearer ${authToken}`
+						Cookie: authCookie
 					},
 					body: JSON.stringify({ videoUrl: 'https://example.com/video.mp4', operation: 'transcode' })
 				});

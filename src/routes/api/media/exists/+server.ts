@@ -12,13 +12,13 @@
 
 import { json, error } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Media
-import { fileExists } from '@utils/media/mediaStorage';
+import { fileExists } from '@utils/media/mediaStorage.server';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Permissions
 
@@ -26,7 +26,7 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 	const { user, tenantId } = locals;
 	// Authentication is handled by hooks.server.ts - user presence confirms access
 
-	if (privateEnv.MULTI_TENANT && !tenantId) {
+	if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 		throw error(400, 'Tenant could not be identified for this operation.');
 	}
 
@@ -36,8 +36,8 @@ export const GET: RequestHandler = async ({ url, locals }) => {
 			throw error(400, 'URL parameter is required');
 		}
 
-		// Pass tenantId to ensure the check is performed in the correct tenant's storage
-		const exists = await fileExists(fileUrl, tenantId);
+		// Check file existence (tenant is handled internally if needed)
+		const exists = await fileExists(fileUrl);
 		logger.debug('Media file existence check', {
 			fileUrl,
 			exists,

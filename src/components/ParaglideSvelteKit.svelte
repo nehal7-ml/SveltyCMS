@@ -18,7 +18,6 @@
 
 <script lang="ts">
 	import { browser } from '$app/environment';
-	import type { Snippet } from 'svelte';
 
 	// Stores
 	import { systemLanguage } from '@stores/store.svelte';
@@ -29,9 +28,7 @@
 	// Dynamically generate LanguageCode type from Paraglide's available locales.
 	type LanguageCode = (typeof availableLocales)[number];
 
-	let { children } = $props<{
-		children?: Snippet;
-	}>();
+	const { children } = $props();
 
 	let locale = $derived(getLocale());
 
@@ -41,8 +38,7 @@
 
 		if (desiredLang) {
 			// Ensure the desired language is one of the available locales and is different from the current
-			if (availableLocales.includes(desiredLang as any) && locale !== desiredLang) {
-				console.log(`System language changed to: ${desiredLang}. Setting Paraglide locale.`);
+			if (availableLocales.includes(desiredLang) && locale !== desiredLang) {
 				setLocale(desiredLang as LanguageCode, { reload: false });
 				// Persisting to localStorage ensures the preference is remembered across sessions/reloads.
 				if (browser) {

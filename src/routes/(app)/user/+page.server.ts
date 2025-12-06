@@ -8,7 +8,7 @@
  *
  * Features:
  * - User and role information retrieval from event.locals
- * - Form handling with Superforms
+ * - Form handling
  * - Error logging and handling
  *
  * Usage:
@@ -17,19 +17,15 @@
  */
 
 import type { PageServerLoad } from './$types';
-import { error } from '@sveltejs/kit';
 
 // Auth
-import type { User, Role, Token } from '@root/src/auth';
-import type { PermissionConfig } from '@src/auth/permissions';
-
-// Superforms
-import { superValidate } from 'sveltekit-superforms/server';
-import { addUserTokenSchema, changePasswordSchema } from '@utils/formSchemas';
-import { valibot } from 'sveltekit-superforms/adapters';
+import { auth } from '@src/databases/db';
+import type { Role, User } from '@src/databases/auth/types';
+import type { PermissionConfig } from '@src/databases/auth/permissions';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { getUntypedSetting } from '@src/services/settingsService';
+import { logger } from '@utils/logger.server';
 
 export const load: PageServerLoad = async (event) => {
 	try {
@@ -38,27 +34,52 @@ export const load: PageServerLoad = async (event) => {
 		const isFirstUser: boolean = event.locals.isFirstUser;
 		const hasManageUsersPermission: boolean = event.locals.hasManageUsersPermission;
 
+		// If user or roles are missing, log details and return fallback response
+		if (!user) {
+			logger.warn('User object missing in event.locals. Returning fallback response.', {
+				request: event.request.url
+			});
+			return {
+				user: null,
+				roles: [],
+				isFirstUser: false,
+				is2FAEnabledGlobal: Boolean(getUntypedSetting('USE_2FA')),
+				manageUsersPermissionConfig: {
+					contextId: 'config/userManagement',
+					requiredRole: 'admin',
+					action: 'manage',
+					contextType: 'system'
+				},
+				adminData: null,
+				permissions: {
+					'config/adminArea': { hasPermission: false }
+				},
+				error: 'User session not found. Please log in again.'
+			};
+		}
+
 		// Determine admin status properly by checking role
 		const userRole = roles.find((role) => role._id === user?.role);
 		const isAdmin = Boolean(userRole?.isAdmin);
 
-		// Get fresh user data from database to ensure we have the latest info
-		let freshUser: User | null = user;
-		if (user) {
-			try {
-				const { auth } = await import('@src/databases/db');
-				if (auth) {
-					freshUser = await auth.getUserById(user._id.toString());
-				}
-			} catch (error) {
-				console.warn('Failed to fetch fresh user data, using session data:', error);
-				freshUser = user; // Fallback to session data
+		// Always fetch fresh user data from database to ensure we have the latest changes
+		// This is especially important after profile updates
+		let freshUser: User | null = null;
+		if (user?._id && auth) {
+			freshUser = await auth.getUserById(user._id.toString());
+			if (freshUser) {
+				logger.debug('Fresh user data fetched for user page', {
+					userId: freshUser._id,
+					username: freshUser.username,
+					email: freshUser.email
+				});
 			}
 		}
 
-		// Validate forms using SuperForms
-		const addUserForm = await superValidate(event, valibot(addUserTokenSchema));
-		const changePasswordForm = await superValidate(event, valibot(changePasswordSchema));
+		// Fallback to session user if database fetch fails
+		if (!freshUser) {
+			freshUser = user;
+		}
 
 		// Prepare user object for return, ensuring _id is a string and including admin status
 		const safeUser = freshUser
@@ -70,50 +91,26 @@ export const load: PageServerLoad = async (event) => {
 				}
 			: null;
 
+		// Admin data will now be fetched on-demand via API endpoints
+		// This improves initial page load performance significantly
 		let adminData = null;
 
 		if (isAdmin || hasManageUsersPermission) {
-			const allUsers: User[] = event.locals?.allUsers ?? [];
-			const allTokens: Token[] = event.locals?.allTokens?.tokens ?? event.locals?.allTokens ?? [];
-
-			// Format users and tokens for the admin area
-			const formattedUsers = allUsers.map((user) => ({
-				_id: user._id.toString(),
-				blocked: user.blocked || false,
-				avatar: user.avatar || null,
-				email: user.email,
-				username: user.username || null,
-				role: user.role,
-				activeSessions: user.lastActiveAt ? 1 : 0, // Placeholder for active sessions
-				lastAccess: user.lastActiveAt ? new Date(user.lastActiveAt).toISOString() : null,
-				createdAt: user.createdAt ? new Date(user.createdAt).toISOString() : null,
-				updatedAt: user.updatedAt ? new Date(user.updatedAt).toISOString() : null
-			}));
-
-			const formattedTokens = allTokens.map((token) => ({
-				_id: token._id || token.user_id,
-				user_id: token.user_id,
-				token: token.token || '',
-				blocked: false, // This needs to be calculated based on expiration or a specific field if available
-				email: token.email || '',
-				role: token.role || 'user', // Ensure role is passed
-				expires: token.expires ? new Date(token.expires).toISOString() : null,
-				createdAt: token.createdAt ? new Date(token.createdAt).toISOString() : null,
-				updatedAt: token.updatedAt ? new Date(token.updatedAt).toISOString() : null
-			}));
-
+			// No longer pre-loading allUsers and allTokens here
+			// The AdminArea component will fetch this data via API calls
 			adminData = {
-				users: formattedUsers,
-				tokens: formattedTokens
+				users: [], // Empty arrays - data loaded on demand
+				tokens: []
 			};
 		}
 
 		// Provide manageUsersPermissionConfig to the client
 		const manageUsersPermissionConfig: PermissionConfig = {
 			contextId: 'config/userManagement',
-			requiredRole: 'admin',
 			action: 'manage',
-			contextType: 'system'
+			contextType: 'system',
+			name: 'User Management',
+			description: 'Manage user accounts and roles'
 		};
 
 		// Return data to the client
@@ -123,18 +120,35 @@ export const load: PageServerLoad = async (event) => {
 				...role,
 				_id: role._id.toString()
 			})),
-			addUserForm,
-			changePasswordForm,
 			isFirstUser,
+			is2FAEnabledGlobal: Boolean(getUntypedSetting('USE_2FA')),
 			manageUsersPermissionConfig,
 			adminData,
 			permissions: {
 				'config/adminArea': { hasPermission: isAdmin || hasManageUsersPermission }
-			}
+			},
+			isAdmin // Pass isAdmin to client for PermissionGuard
 		};
 	} catch (err) {
-		// Log error with an error code
+		// Log error with an error code and more details
 		logger.error('Error during load function (ErrorCode: USER_LOAD_500):', err);
-		throw error(500, 'Internal Server Error');
+		return {
+			user: null,
+			roles: [],
+			isFirstUser: false,
+			is2FAEnabledGlobal: false,
+			manageUsersPermissionConfig: {
+				contextId: 'config/userManagement',
+				requiredRole: 'admin',
+				action: 'manage',
+				contextType: 'system'
+			},
+			adminData: null,
+			permissions: {
+				'config/adminArea': { hasPermission: false }
+			},
+			isAdmin: false,
+			error: 'Internal Server Error. Please try again later.'
+		};
 	}
 };

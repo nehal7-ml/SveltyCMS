@@ -7,25 +7,25 @@ component
 <script lang="ts">
 	// Stores
 	import { page } from '$app/state';
+	import { logger } from '@utils/logger';
+	import { collection, setTargetWidget } from '@src/stores/collectionStore.svelte';
 	import { tabSet } from '@stores/store.svelte';
-	import { targetWidget, collection } from '@src/stores/collectionStore.svelte';
-	import { getGuiFields, asAny } from '@utils/utils';
-
+	import { asAny, getGuiFields } from '@utils/utils';
 	// Components
 	import VerticalList from '@components/VerticalList.svelte';
-	import widgets from '@src/widgets';
-
+	import { widgetFunctions } from '@stores/widgetStore.svelte';
+	import { get } from 'svelte/store';
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 
 	// Skeleton
-	import { getModalStore } from '@skeletonlabs/skeleton';
-	import type { ModalSettings, ModalComponent } from '@skeletonlabs/skeleton';
-	import ModalWidgetForm from './CollectionWidget/ModalWidgetForm.svelte';
-	import ModalSelectWidget from './CollectionWidget/ModalSelectWidget.svelte';
-	import type { Field } from '@root/src/content/types';
 
-	let props = $props<{ fields?: Field[]; handleCollectionSave: () => Promise<void> }>();
+	import type { ModalComponent, ModalSettings } from '@skeletonlabs/skeleton';
+	import { getModalStore } from '@skeletonlabs/skeleton';
+	import ModalSelectWidget from './CollectionWidget/ModalSelectWidget.svelte';
+	import ModalWidgetForm from './CollectionWidget/ModalWidgetForm.svelte';
+
+	const props = $props();
 
 	const modalStore = getModalStore();
 
@@ -41,7 +41,7 @@ component
 				field.widget?.Name || // For existing widgets
 				field.__type || // For schema-defined widgets
 				field.type || // Backup type field
-				Object.keys(widgets).find((key) => field[key]) || // Check if field has widget property
+				Object.keys(get(widgetFunctions)).find((key) => field[key]) || // Check if field has widget property
 				'Unknown Widget'; // Fallback
 
 			return {
@@ -56,8 +56,15 @@ component
 		});
 	}
 
-	// Use state for fields
-	let fields = $derived(mapFieldsWithWidgets(props.fields ?? []));
+	// Use state for fields (not derived, since we need to mutate it via drag-and-drop)
+	let fields = $state(mapFieldsWithWidgets(props.fields ?? []));
+
+	// Watch for changes in props.fields and update our state
+	$effect(() => {
+		if (props.fields) {
+			fields = mapFieldsWithWidgets(props.fields);
+		}
+	});
 
 	// Collection headers
 	const headers = ['Id', 'Icon', 'Name', 'DBName', 'Widget'];
@@ -65,11 +72,11 @@ component
 	// svelte-dnd-action
 	const flipDurationMs = 300;
 
-	const handleDndConsider = (e: CustomEvent<{ items: any[] }>) => {
+	const handleDndConsider = (e: CustomEvent) => {
 		fields = e.detail.items;
 	};
 
-	const handleDndFinalize = (e: CustomEvent<{ items: any[] }>) => {
+	const handleDndFinalize = (e: CustomEvent) => {
 		fields = e.detail.items;
 	};
 
@@ -82,14 +89,15 @@ component
 			title: 'Select a Widget',
 			body: 'Select your widget and then press submit.',
 			value: selected, // Pass the selected widget as the initial value
-			response: (r: { selectedWidget: keyof typeof widgets } | undefined) => {
+			response: (r: { selectedWidget: string } | undefined) => {
 				if (!r) return;
 				const { selectedWidget } = r;
-				if (selectedWidget && widgets[selectedWidget]) {
+				const widgetInstance = get(widgetFunctions)[selectedWidget];
+				if (selectedWidget && widgetInstance) {
 					// Create a new widget object with the selected widget data
 					const newWidget = {
 						widget: { key: selectedWidget, Name: selectedWidget },
-						GuiFields: getGuiFields({ key: selectedWidget }, asAny(widgets[selectedWidget].GuiSchema)),
+						GuiFields: getGuiFields({ key: selectedWidget }, asAny(widgetInstance.GuiSchema)),
 						permissions: {} // Initialize empty permissions object
 					};
 					// Call modalWidgetForm with the new widget object
@@ -107,7 +115,7 @@ component
 		if (!selectedWidget.permissions) {
 			selectedWidget.permissions = {};
 		}
-		targetWidget.set(selectedWidget);
+		setTargetWidget(selectedWidget);
 		const modal: ModalSettings = {
 			type: 'component',
 			component: c,
@@ -136,14 +144,9 @@ component
 					fields = [...fields, newField];
 				}
 				// Update the collectionValue store
-				collection.update((c) => {
-					if (c) {
-						c.fields = fields;
-					}
-
-					console.log('updated collection', c);
-					return c;
-				});
+				if (collection?.value) {
+					collection.value.fields = fields;
+				}
 			}
 		};
 		modalStore.trigger(modal);
@@ -153,8 +156,9 @@ component
 	async function handleSave() {
 		try {
 			const updatedFields = fields.map((field) => {
-				if (field.widget?.Name && widgets[field.widget.Name]) {
-					const GuiFields = getGuiFields({ key: field.widget.Name }, asAny(widgets[field.widget.Name].GuiSchema));
+				const widgetInstance = field.widget?.Name ? get(widgetFunctions)[field.widget.Name] : undefined;
+				if (field.widget?.Name && widgetInstance) {
+					const GuiFields = getGuiFields({ key: field.widget.Name }, asAny(widgetInstance.GuiSchema));
 					for (const [property, value] of Object.entries(field)) {
 						if (typeof value !== 'object' && property !== 'id') {
 							GuiFields[property] = field[property];
@@ -166,16 +170,13 @@ component
 			});
 
 			// Update the collection fields
-			collection.update((c) => {
-				if (c) {
-					c.fields = updatedFields;
-				}
-				return c;
-			});
+			if (collection?.value) {
+				collection.value.fields = updatedFields;
+			}
 
 			await props.handleCollectionSave();
 		} catch (error) {
-			console.error('Error saving collection:', error);
+			logger.error('Error saving collection:', error);
 		}
 	}
 </script>
@@ -212,7 +213,12 @@ component
 	</div>
 	<div>
 		<div class="mt-2 flex items-center justify-center gap-3">
-			<button onclick={() => modalSelectWidget(null)} class="variant-filled-tertiary btn" aria-label={m.collection_widgetfield_addFields()}>
+			<button
+				onclick={() => modalSelectWidget(null)}
+				class="variant-filled-tertiary btn"
+				aria-label={m.collection_widgetfield_addFields()}
+				data-testid="add-field-button"
+			>
 				{m.collection_widgetfield_addFields()}
 			</button>
 		</div>

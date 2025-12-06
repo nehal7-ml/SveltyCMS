@@ -2,6 +2,7 @@
  @file src/components/system/inputs/floatingInput.svelte
  @component 
  **FloatingInput component for handling text and password inputs with floating labels**
+
  #### Props
  - `value` {string}: The input value (bindable)
  - `showPassword` {boolean}: Initial visibility of password (bindable, default: false)
@@ -24,19 +25,23 @@
  - `onClick` {function}: Click event handler (optional)
  - `onInput` {function}: Input event handler (optional)
  - `onkeydown` {function}: Keydown event handler (optional)
+
+ ### Features
+ - Floating labels for better UX
+ - Password visibility toggle for password inputs
+ - Full ARIA support for accessibility
+ - Customizable styling via props
 -->
 
 <script lang="ts">
-	type InputType = 'text' | 'email' | 'password';
-	type BackgroundColorType = 'light' | 'dark';
+	import type { FloatingInputProps } from './types';
 
-	// Props with bindable value and showPassword
 	let {
 		value = $bindable(''),
 		showPassword = $bindable(false),
 		disabled = false,
 		icon = '',
-		iconColor = 'gray-500',
+		iconColor = 'gray',
 		inputClass = '',
 		label = '',
 		labelClass = '',
@@ -44,64 +49,37 @@
 		maxlength,
 		name = '',
 		required = false,
-		showPasswordBackgroundColor = 'light',
-		textColor = '!text-error-500',
+		passwordIconColor = 'gray',
+		textColor = 'black',
 		type = 'text',
 		tabindex = 0,
 		id = '',
-		autocomplete = null as string | null,
+		autocomplete,
+		autocapitalize = 'none',
+		spellcheck = false,
+		autofocus = false,
+		invalid = false,
+		errorMessage = '',
 		onClick,
 		onInput,
 		onkeydown,
 		onPaste
-	} = $props<{
-		value?: string;
-		showPassword?: boolean;
-		disabled?: boolean;
-		icon?: string;
-		iconColor?: string;
-		inputClass?: string;
-		label?: string;
-		labelClass?: string;
-		minlength?: number;
-		maxlength?: number;
-		name?: string;
-		required?: boolean;
-		showPasswordBackgroundColor?: BackgroundColorType;
-		textColor?: string;
-		type?: InputType;
-		tabindex?: number;
-		id?: string;
-		autocomplete?: string | null;
-		onClick?: ((event: MouseEvent) => void) | undefined;
-		onInput?: ((value: string) => void) | undefined;
-		onkeydown?: ((event: KeyboardEvent) => void) | undefined;
-		onPaste?: ((event: ClipboardEvent) => void) | undefined;
-	}>();
+	}: FloatingInputProps = $props();
 
-	// State
-	let inputElement = $state<HTMLInputElement>();
-	let isPasswordVisible = $state(showPassword);
-	let currentId = $derived(id || (label ? label.toLowerCase().replace(/\s+/g, '-') : 'defaultInputId'));
+	let inputElement = $state<HTMLInputElement | null>(null);
+	const currentId = $derived(id || (label ? label.toLowerCase().replace(/\s+/g, '-') : 'defaultInputId'));
+	const errorId = $derived(errorMessage ? `error-${currentId}` : undefined);
+	const effectiveType = $derived(showPassword && type === 'password' ? 'text' : type);
 
-	// Derived input type for password toggle
-	const effectiveType = $derived(isPasswordVisible && type === 'password' ? 'text' : type);
-
-	// Sync showPassword with isPasswordVisible
 	$effect(() => {
-		isPasswordVisible = showPassword;
+		if (autofocus && inputElement) {
+			inputElement.focus();
+		}
 	});
-
-	// Event handlers
-	function handleClick(event: MouseEvent): void {
-		event.stopPropagation();
-		onClick?.(event);
-	}
 
 	function togglePasswordVisibility(event: Event): void {
 		event.preventDefault();
-		isPasswordVisible = !isPasswordVisible;
-		showPassword = isPasswordVisible; // Sync back to bindable prop
+		showPassword = !showPassword;
 	}
 
 	function handleIconKeyDown(event: KeyboardEvent): void {
@@ -110,73 +88,76 @@
 			togglePasswordVisibility(event);
 		}
 	}
-
-	// Sync input element type (fallback for edge cases)
-	$effect(() => {
-		if (inputElement && type === 'password') {
-			inputElement.type = effectiveType;
-		}
-	});
 </script>
 
-<div class="group relative w-full" role="group" aria-labelledby={currentId}>
-	<input
-		bind:this={inputElement}
-		bind:value
-		{name}
-		{minlength}
-		{maxlength}
-		{required}
-		{disabled}
-		{tabindex}
-		{autocomplete}
-		onclick={handleClick}
-		oninput={(e) => onInput?.(e.currentTarget.value)}
-		onpaste={onPaste}
-		{onkeydown}
-		type={effectiveType}
-		class="peer block w-full appearance-none border-0 border-b-2 border-surface-300 bg-transparent pl-6 text-{textColor} focus:border-tertiary-600 focus:outline-none focus:ring-0 disabled:opacity-50 dark:border-surface-400 dark:focus:border-tertiary-500 {inputClass}"
-		placeholder=" "
-		id={currentId}
-	/>
+<div class="relative w-full">
+	<div class="group relative flex w-full items-center" role="group" aria-labelledby={currentId}>
+		<input
+			bind:this={inputElement}
+			bind:value
+			{name}
+			{minlength}
+			{maxlength}
+			{disabled}
+			{tabindex}
+			autocomplete={autocomplete ?? undefined}
+			{autocapitalize}
+			{spellcheck}
+			aria-required={required}
+			aria-invalid={invalid}
+			aria-describedby={errorId}
+			onclick={onClick}
+			oninput={(e) => onInput?.(e.currentTarget.value)}
+			onpaste={onPaste}
+			{onkeydown}
+			type={effectiveType}
+			style="color: {textColor};"
+			class="peer block w-full appearance-none border-0 border-b-2 border-surface-300 bg-transparent px-6 text-base focus:border-tertiary-600 focus:outline-none focus:ring-0 disabled:opacity-50 dark:border-surface-400 dark:focus:border-tertiary-500 {inputClass}"
+			class:!border-error-500={invalid}
+			class:dark:!border-error-500={invalid}
+			class:pr-10={type === 'password'}
+			placeholder=" "
+			id={currentId}
+		/>
 
-	{#if icon}
-		<iconify-icon {icon} width="1.125em" class="absolute left-1 top-3 text-{iconColor}" aria-hidden="true" role="presentation"></iconify-icon>
-	{/if}
+		{#if icon}
+			<iconify-icon {icon} width="1.125em" class="absolute left-0 top-3" style="color: {iconColor};" aria-hidden="true"></iconify-icon>
+		{/if}
 
-	{#if type === 'password'}
-		<iconify-icon
-			tabindex={0}
-			role="button"
-			icon={isPasswordVisible ? 'bi:eye-fill' : 'bi:eye-slash-fill'}
-			aria-label={isPasswordVisible ? 'Hide password' : 'Show password'}
-			aria-pressed={isPasswordVisible}
-			class="absolute right-2 top-3 text-{showPasswordBackgroundColor === 'light'
-				? 'surface-700'
-				: 'surface-300'} hover:text-tertiary-500 focus:outline-none"
-			width="24"
-			onkeydown={handleIconKeyDown}
-			onclick={togglePasswordVisibility}
-		></iconify-icon>
-	{/if}
+		{#if type === 'password'}
+			<iconify-icon
+				tabindex="0"
+				role="button"
+				icon={showPassword ? 'bi:eye-fill' : 'bi:eye-slash-fill'}
+				aria-label={showPassword ? 'Hide password' : 'Show password'}
+				aria-pressed={showPassword}
+				class="absolute right-2 top-3 cursor-pointer hover:opacity-75 focus:outline-none"
+				width="24"
+				style="color: {passwordIconColor};"
+				onkeydown={handleIconKeyDown}
+				onclick={togglePasswordVisibility}
+			></iconify-icon>
+		{/if}
 
-	{#if label}
-		<label
-			for={currentId}
-			class="pointer-events-none absolute left-6 top-0 transform text-sm text-surface-400 transition-all duration-200 ease-in-out peer-placeholder-shown:top-3 peer-placeholder-shown:text-base peer-placeholder-shown:text-surface-400 peer-focus:-top-1.5 peer-focus:text-xs peer-focus:text-tertiary-500 peer-disabled:text-surface-500 {value
-				? '-top-1.5 text-xs text-tertiary-500'
-				: ''} {labelClass}"
-		>
-			{label}
-			{#if required}
-				<span class="text-error-500" aria-hidden="true">*</span>
-			{/if}
-		</label>
+		{#if label}
+			<label
+				for={currentId}
+				class="pointer-events-none absolute left-6 top-3 origin-[0] -translate-y-4 transform text-base text-surface-400 transition-all duration-200 ease-in-out peer-placeholder-shown:translate-y-0 peer-placeholder-shown:text-base peer-focus:-translate-y-4 peer-focus:text-xs peer-focus:text-tertiary-500 peer-disabled:text-surface-500 {invalid &&
+				value
+					? '!text-error-500'
+					: ''} {value ? '-translate-y-4 text-xs' : ''} {labelClass}"
+			>
+				{label}
+				{#if required}
+					<span class="text-error-500" aria-hidden="true">*</span>
+				{/if}
+			</label>
+		{/if}
+	</div>
+
+	{#if invalid && errorMessage}
+		<p id={errorId} class="mt-1 text-xs text-error-500" role="alert">
+			{errorMessage}
+		</p>
 	{/if}
 </div>
-
-<style lang="postcss">
-	.group {
-		@apply relative flex w-full items-center;
-	}
-</style>

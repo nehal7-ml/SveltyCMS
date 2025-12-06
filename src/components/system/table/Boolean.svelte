@@ -6,17 +6,19 @@
 @example
 <Boolean value={true} />
 
-@props
+### Props
 - `value` {boolean}: The boolean value to display
+
+### Features:
+- Displays 'Yes' for true and 'No' for false
+- Uses badges with different gradients for visual distinction
 -->
 
 <script lang="ts">
 	//ParaglideJS
 	import * as m from '@src/paraglide/messages';
-
-	let { value } = $props<{
-		value: boolean; // The boolean value to display
-	}>();
+	// Boolean badge for tables
+	export let value: boolean = false;
 </script>
 
 <!-- Display 'Yes' for true and 'No' for false with badges -->

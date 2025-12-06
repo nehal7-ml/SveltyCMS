@@ -18,22 +18,23 @@
  * }
  */
 
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 import { error, json, type HttpError } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
+import type { User } from '@src/databases/auth/types';
 
 // Auth and permission helpers
 import { auth } from '@src/databases/db';
 
 // Validation
-import { array, minLength, object, parse, picklist, string, type ValiError } from 'valibot';
+import { array, minLength, object, parse, picklist, pipe, string } from 'valibot';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 const batchUserActionSchema = object({
-	userIds: array(string([minLength(1, 'User ID cannot be empty.')])),
+	userIds: array(pipe(string(), minLength(1, 'User ID cannot be empty.'))),
 	action: picklist(['delete', 'block', 'unblock'], 'Invalid action specified.')
 });
 
@@ -57,19 +58,17 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		// --- MULTI-TENANCY SECURITY CHECK ---
 		// Before performing any action, verify all target users belong to the current tenant.
-		if (privateEnv.MULTI_TENANT) {
+		if (getPrivateSettingSync('MULTI_TENANT')) {
 			if (!tenantId) {
 				throw error(500, 'Tenant could not be identified for this operation.');
 			}
 			// Check if all users exist and belong to the tenant
 			const userChecks = await Promise.all(
 				userIds.map(async (userId) => {
-					const userResult = await auth.db.getUserById(userId, tenantId);
-					return userResult.success ? userResult.data : null;
+					return await auth!.getUserById(userId, tenantId);
 				})
 			);
-			
-			if (userChecks.some(user => user === null)) {
+			if (userChecks.some((u: User | null) => u === null)) {
 				logger.warn(`Attempt to act on users outside of tenant or non-existent users`, {
 					userId: user?._id,
 					tenantId,
@@ -83,15 +82,43 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		switch (action) {
 			case 'delete': {
-				const result = await auth.db.deleteUsers(userIds, tenantId);
-				if (!result.success) {
-					throw error(500, `Failed to delete users: ${result.error}`);
+				// Use optimized deleteUserAndSessions for each user to ensure sessions are cleaned up
+				let totalDeleted = 0;
+				let totalSessionsDeleted = 0;
+
+				for (const userId of userIds) {
+					const result = await auth.deleteUserAndSessions(userId, tenantId);
+					if (result.success && result.data) {
+						totalDeleted++;
+						totalSessionsDeleted += result.data.deletedSessionCount || 0;
+					} else {
+						const errorMsg = !result.success && 'error' in result ? result.error?.message : 'Unknown error';
+						logger.warn(`Failed to delete user or sessions`, {
+							userId,
+							error: errorMsg,
+							tenantId
+						});
+					}
 				}
-				successMessage = 'Users deleted successfully.';
+				if (totalDeleted === 0) {
+					throw error(500, 'Failed to delete any users');
+				}
+
+				successMessage =
+					totalDeleted === userIds.length
+						? `${totalDeleted} user(s) and ${totalSessionsDeleted} session(s) deleted successfully.`
+						: `${totalDeleted} of ${userIds.length} user(s) deleted (${totalSessionsDeleted} sessions cleaned up). Some deletions failed.`;
+
+				logger.info('User deletion completed', {
+					requested: userIds.length,
+					deleted: totalDeleted,
+					sessionsDeleted: totalSessionsDeleted,
+					tenantId
+				});
 				break;
 			}
 			case 'block': {
-				const result = await auth.db.blockUsers(userIds, tenantId);
+				const result = await auth.blockUsers(userIds, tenantId);
 				if (!result.success) {
 					throw error(500, `Failed to block users: ${result.error}`);
 				}
@@ -99,7 +126,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				break;
 			}
 			case 'unblock': {
-				const result = await auth.db.unblockUsers(userIds, tenantId);
+				const result = await auth.unblockUsers(userIds, tenantId);
 				if (!result.success) {
 					throw error(500, `Failed to unblock users: ${result.error}`);
 				}
@@ -107,22 +134,20 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 				break;
 			}
 		}
-
 		logger.info(`Batch user action '${action}' completed.`, {
 			affectedIds: userIds,
 			executedBy: user?._id,
 			tenantId
 		});
-		// Invalidate admin cache since user data has changed
-
-		const { invalidateAdminCache } = await import('@src/hooks.server');
-		invalidateAdminCache('users', tenantId);
+		// Invalidate user count cache since users were deleted
+		const { invalidateUserCountCache } = await import('@src/hooks/handleAuthorization');
+		invalidateUserCountCache(tenantId);
 
 		return json({ success: true, message: successMessage });
 	} catch (err) {
-		if (err.name === 'ValiError') {
-			const valiError = err as ValiError;
-			const issues = valiError.issues.map((issue) => issue.message).join(', ');
+		if (err instanceof Error && err.name === 'ValiError') {
+			const valiError = err as unknown as { issues: Array<{ message: string }> };
+			const issues = valiError.issues.map((issue: { message: string }) => issue.message).join(', ');
 			logger.warn('Invalid input for user batch API:', { issues });
 			throw error(400, `Invalid input: ${issues}`);
 		}

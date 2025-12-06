@@ -18,16 +18,19 @@
 
 import { error, json, type HttpError } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 // Auth and permission helpers
 import { auth } from '@src/databases/db';
 
 // System logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Media storage
-import { moveMediaToTrash } from '@utils/media/mediaStorage';
+import { moveMediaToTrash } from '@utils/media/mediaStorage.server';
+
+// Cache service
+import { cacheService } from '@src/databases/CacheService';
 
 export const DELETE: RequestHandler = async ({ request, locals }) => {
 	const { user: currentUser, tenantId } = locals;
@@ -35,15 +38,20 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
 		if (!currentUser) {
 			throw error(401, 'Unauthorized');
 		}
-		if (privateEnv.MULTI_TENANT && !tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !tenantId) {
 			throw error(400, 'Tenant could not be identified for this operation.');
-		} // Parse request body to get optional target user ID
+		} // Parse request body to get optional target user ID and avatar URL
 
 		let targetUserId = currentUser._id; // Default to self
+		let avatarUrlToDelete: string | null = null;
+
 		try {
 			const body = await request.json();
 			if (body.userId) {
 				targetUserId = body.userId;
+			}
+			if (body.avatarUrl) {
+				avatarUrlToDelete = body.avatarUrl;
 			}
 		} catch {
 			// If no body or invalid JSON, use default (self)
@@ -53,7 +61,7 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
 		const isEditingSelf = currentUser._id === targetUserId;
 
 		// In multi-tenant mode, ensure target user is in same tenant when editing others
-		if (privateEnv.MULTI_TENANT && !isEditingSelf) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !isEditingSelf) {
 			// Ensure the authentication system is initialized
 			if (!auth) {
 				logger.error('Authentication system is not initialized');
@@ -85,21 +93,32 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
 			throw error(404, 'User not found');
 		}
 
-		if (user.avatar) {
+		// Use avatar URL from request body if provided, otherwise use user.avatar from DB
+		const avatarToDelete = avatarUrlToDelete || user.avatar;
+
+		if (avatarToDelete && avatarToDelete !== '/Default_User.svg') {
 			try {
 				// Move avatar to trash
-				await moveMediaToTrash(user.avatar);
-				logger.info('Avatar moved to trash successfully', { userId: user._id, avatar: user.avatar, deletedBy: currentUser._id, tenantId });
+				await moveMediaToTrash(avatarToDelete);
+				logger.info('Avatar moved to trash successfully', { userId: user._id, avatar: avatarToDelete, deletedBy: currentUser._id, tenantId });
 			} catch (moveError) {
-				if (moveError.message.includes('ENOENT')) {
+				logger.error('Error in moveMediaToTrash', {
+					userId: user._id,
+					avatar: avatarToDelete,
+					error: moveError,
+					errorMessage: moveError instanceof Error ? moveError.message : String(moveError),
+					errorStack: moveError instanceof Error ? moveError.stack : undefined
+				});
+				if (moveError instanceof Error && moveError.message.includes('ENOENT')) {
 					logger.warn('Avatar file not found, but proceeding to remove it from user profile.', {
 						userId: user._id,
-						avatar: user.avatar,
+						avatar: avatarToDelete,
 						error: moveError.message
 					});
 				} else {
-					logger.error(`Failed to move avatar file to trash: ${moveError.message}`, { userId: user._id });
-					throw error(500, `Failed to move avatar to trash: ${moveError.message}`);
+					const errorMsg = moveError instanceof Error ? moveError.message : String(moveError);
+					logger.error(`Failed to move avatar file to trash: ${errorMsg}`, { userId: user._id });
+					throw error(500, `Failed to move avatar to trash: ${errorMsg}`);
 				}
 			}
 		} else {
@@ -107,10 +126,22 @@ export const DELETE: RequestHandler = async ({ request, locals }) => {
 			return json({ success: true, message: 'No avatar to remove.' });
 		} // Remove the avatar URL from the user's profile.
 
-		await auth.updateUserAttributes(targetUserId, { avatar: null }, tenantId);
+		await auth.updateUserAttributes(targetUserId, { avatar: undefined }, tenantId);
 		logger.info('User avatar attribute removed from profile.', { userId: targetUserId, removedBy: currentUser._id, tenantId });
 
-		return json({ success: true, message: 'Avatar removed successfully' });
+		// Invalidate cache for users list so UI updates
+		try {
+			// Invalidate all user-related caches for all users (since admin user list includes all users)
+			await cacheService.clearByPattern('api:*:/api/admin/users*', tenantId);
+			logger.debug('Cache invalidated for users list after avatar deletion');
+		} catch (cacheError) {
+			// Log but don't fail the request if cache invalidation fails
+			logger.warn('Failed to invalidate cache after avatar deletion', { error: cacheError });
+		}
+
+		// Return normalized default avatar to update UI and allow client refresh
+		const defaultUrl = '/Default_User.svg';
+		return json({ success: true, message: 'Avatar removed successfully', avatarUrl: defaultUrl });
 	} catch (err) {
 		const httpError = err as HttpError;
 		const status = httpError.status || 500;

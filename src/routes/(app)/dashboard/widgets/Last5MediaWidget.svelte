@@ -26,8 +26,9 @@
 </script>
 
 <script lang="ts">
-	import BaseWidget from '../BaseWidget.svelte';
 	import { formatDisplayDate } from '@utils/dateUtils';
+	import BaseWidget from '../BaseWidget.svelte';
+	import type { WidgetSize } from '@src/content/types';
 
 	interface MediaFile {
 		id: string;
@@ -41,23 +42,23 @@
 
 	type FetchedData = MediaFile[] | undefined;
 
-	let {
+	const {
 		label = 'Last 5 Media',
 		theme = 'light',
 		icon = 'mdi:image-multiple-outline',
 		widgetId = undefined,
-		size = { w: 1, h: 1 },
-		onSizeChange = (newSize: { w: number; h: number }) => {},
-		onCloseRequest = () => {}
-	} = $props<{
+		size = { w: 1, h: 1 } as WidgetSize,
+		onSizeChange = (_newSize: WidgetSize) => {},
+		onRemove = () => {}
+	}: {
 		label?: string;
 		theme?: 'light' | 'dark';
 		icon?: string;
 		widgetId?: string;
-		size?: { w: number; h: number };
-		onSizeChange?: (newSize: { w: number; h: number }) => void;
-		onCloseRequest?: () => void;
-	}>();
+		size?: WidgetSize;
+		onSizeChange?: (newSize: WidgetSize) => void;
+		onRemove?: () => void;
+	} = $props();
 
 	function formatFileSize(bytes: number): string {
 		if (bytes === 0) return '0 B';
@@ -80,7 +81,17 @@
 	}
 </script>
 
-<BaseWidget {label} {theme} endpoint="/api/dashboard/last5media" pollInterval={30000} {icon} {widgetId} {size} {onSizeChange} {onCloseRequest}>
+<BaseWidget
+	{label}
+	{theme}
+	endpoint="/api/dashboard/last5media"
+	pollInterval={30000}
+	{icon}
+	{widgetId}
+	{size}
+	{onSizeChange}
+	onCloseRequest={onRemove}
+>
 	{#snippet children({ data: fetchedData }: { data: FetchedData })}
 		{#if fetchedData && Array.isArray(fetchedData) && fetchedData.length > 0}
 			<div class="grid gap-2" style="max-height: 180px; overflow-y: auto;" role="list" aria-label="Last 5 media files">

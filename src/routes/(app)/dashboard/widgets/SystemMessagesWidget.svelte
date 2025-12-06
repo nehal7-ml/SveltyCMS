@@ -27,6 +27,7 @@
 
 <script lang="ts">
 	import BaseWidget from '../BaseWidget.svelte';
+	import type { WidgetSize } from '@src/content/types';
 
 	// Defines the structure for a single system message.
 	interface SystemMessage {
@@ -38,26 +39,36 @@
 	// Defines the shape of the data payload fetched from the API.
 	type FetchedData = SystemMessage[] | undefined;
 
-	let {
+	const {
 		label = 'System Messages',
-		theme = 'light',
+		theme = 'light' as 'light' | 'dark',
 		icon = 'mdi:message-alert-outline',
 		widgetId = undefined,
-		size = { w: 1, h: 2 },
-		onSizeChange = (newSize: { w: number; h: number }) => {},
-		onCloseRequest = () => {}
-	} = $props<{
+		size = { w: 1, h: 2 } as WidgetSize,
+		onSizeChange = (_newSize: WidgetSize) => {},
+		onRemove = () => {}
+	}: {
 		label?: string;
 		theme?: 'light' | 'dark';
 		icon?: string;
 		widgetId?: string;
-		size?: { w: number; h: number };
-		onSizeChange?: (newSize: { w: number; h: number }) => void;
-		onCloseRequest?: () => void;
-	}>();
+		size?: WidgetSize;
+		onSizeChange?: (newSize: WidgetSize) => void;
+		onRemove?: () => void;
+	} = $props();
 </script>
 
-<BaseWidget {label} {theme} endpoint="/api/dashboard/systemMessages" pollInterval={30000} {icon} {widgetId} {size} {onSizeChange} {onCloseRequest}>
+<BaseWidget
+	{label}
+	{theme}
+	endpoint="/api/dashboard/systemMessages"
+	pollInterval={30000}
+	{icon}
+	{widgetId}
+	{size}
+	{onSizeChange}
+	onCloseRequest={onRemove}
+>
 	{#snippet children({ data: fetchedData }: { data: FetchedData })}
 		{#if fetchedData && Array.isArray(fetchedData) && fetchedData.length > 0}
 			<div class="grid gap-2" style="max-height: calc({size.h} * 120px - 40px); overflow-y: auto;" role="list" aria-label="System messages">

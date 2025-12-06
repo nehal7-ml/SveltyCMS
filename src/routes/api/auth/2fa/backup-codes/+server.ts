@@ -5,8 +5,8 @@
 
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { logger } from '@utils/logger.svelte';
-import { getDefaultTwoFactorAuthService } from '@auth/twoFactorAuth';
+import { logger } from '@utils/logger.server';
+import { getDefaultTwoFactorAuthService } from '@src/databases/auth/twoFactorAuth';
 import { auth } from '@databases/db';
 
 // GET - Get 2FA status including backup codes count
@@ -21,8 +21,13 @@ export const GET: RequestHandler = async ({ locals }) => {
 		const user = locals.user;
 		const tenantId = user.tenantId;
 
-		// Get 2FA status
-		const twoFactorService = getDefaultTwoFactorAuthService(auth);
+		// Ensure auth service is initialized
+		if (!auth) {
+			logger.error('Auth service not initialized during 2FA status request');
+			throw error(500, 'Auth service not available');
+		}
+
+		const twoFactorService = getDefaultTwoFactorAuthService(auth.authInterface);
 		const status = await twoFactorService.get2FAStatus(user._id, tenantId);
 
 		logger.debug('2FA status retrieved', { userId: user._id, tenantId });
@@ -64,8 +69,14 @@ export const POST: RequestHandler = async ({ locals }) => {
 			throw error(400, '2FA is not enabled for this account');
 		}
 
+		// Ensure auth service is initialized
+		if (!auth) {
+			logger.error('Auth service not initialized during backup code regeneration');
+			throw error(500, 'Auth service not available');
+		}
+
 		// Regenerate backup codes
-		const twoFactorService = getDefaultTwoFactorAuthService(auth);
+		const twoFactorService = getDefaultTwoFactorAuthService(auth.authInterface);
 		const newBackupCodes = await twoFactorService.regenerateBackupCodes(user._id, tenantId);
 
 		logger.info('Backup codes regenerated', { userId: user._id, tenantId });

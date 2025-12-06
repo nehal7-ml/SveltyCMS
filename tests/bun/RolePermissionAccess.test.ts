@@ -1,151 +1,189 @@
-/// <reference types="bun-types" />
+/**
+ * @file tests/bun/RolePermissionAccess.test.ts
+ * @description Tests for role and permission management in the Auth system
+ *
+ * This test file validates:
+ * - Role-based permission checking
+ * - Admin privilege handling
+ * - Action-based permissions
+ * - Permission utility functions
+ *
+ * Uses mocked roles and permission functions for isolated testing.
+ * Tests the permission checking logic that works with database-stored roles.
+ *
+ * **DOES NOT require a running application** - all dependencies are mocked via:
+ * - tests/bun/mocks/setup.ts (preloaded via bunfig.toml)
+ * - Mock roles defined in this file
+ *
+ * This allows the tests to run in CI/CD environments (like GitHub Actions)
+ * without needing a database connection or running server.
+ */
 
-import { describe, test, expect, vi } from 'bun:test';
+// @ts-expect-error - Bun types are not available in TypeScript
+import { beforeEach, describe, expect, test } from 'bun:test';
+import {
+	hasPermissionWithRoles,
+	hasPermissionByAction,
+	isAdminRoleWithRoles,
+	getAllPermissions,
+	registerPermission
+} from '../../../src/databases/auth/permissions';
+import { PermissionAction } from '../../../src/databases/auth/types';
+import type { Role, User } from '../../../src/databases/auth/types';
 
-// Mock SvelteKit-specific environment import
+// Mock roles that would be in database
+const mockRoles: Role[] = [
+	{
+		_id: 'admin',
+		name: 'Admin',
+		description: 'Administrator with full access',
+		permissions: [], // Admins get all permissions via isAdmin flag
+		isAdmin: true
+	},
+	{
+		_id: 'editor',
+		name: 'Editor',
+		description: 'Can create and edit content',
+		permissions: ['content:read', 'content:write', 'content:create'],
+		isAdmin: false
+	},
+	{
+		_id: 'viewer',
+		name: 'Viewer',
+		description: 'Can only view content',
+		permissions: ['content:read'],
+		isAdmin: false
+	}
+];
 
 describe('Role and Permission Access Management', () => {
-	vi.mock('$app/environment', () => ({
-		browser: false // Adjust based on your test environment
-	}));
-
-	vi.mock('@root/config/public', () => ({
-		publicEnv: {
-			LOG_LEVELS: ['error', 'warn', 'info'] // Your desired default log levels
-		}
-	}));
-});
-
-import { Auth } from '@src/auth';
-import { PermissionAction } from '@src/auth/permissionTypes';
-import type { Role, User, authDBInterface } from '@src/auth/types';
-import { checkUserPermission, loadUserPermissions } from '@src/auth/permissionCheck';
-import { getPermissionByName, getAllPermissions, syncPermissions } from '@src/auth/permissionManager';
-
-// Mock database adapter
-const mockDbAdapter = {
-	createUser: async () => ({
-		_id: 'user1',
-		email: 'user@example.com',
-		role: 'user',
-		permissions: []
-	}),
-	getUserByEmail: async () => ({
-		_id: 'user1',
-		email: 'user@example.com',
-		role: 'user',
-		permissions: []
-	}),
-	updateUserAttributes: async () => {}
-	// Add other required methods with mock implementations
-};
-
-describe('Role and Permission Access Management', () => {
-	const auth = new Auth(mockDbAdapter as authDBInterface);
-
-	test('Create and manage roles', async () => {
-		const newRole: Role = {
-			_id: 'editor',
-			name: 'Editor',
-			description: 'Can edit content',
-			permissions: ['content:read', 'content:write']
-		};
-
-		await auth.createRole(newRole, 'admin');
-		const retrievedRole = await auth.getRoleById('editor');
-		expect(retrievedRole).toBeDefined();
-		expect(retrievedRole?.name).toBe('Editor');
-
-		await auth.updateRole('editor', { description: 'Can edit and publish content' }, 'admin');
-		const updatedRole = await auth.getRoleById('editor');
-		expect(updatedRole?.description).toBe('Can edit and publish content');
-
-		const allRoles = await auth.getAllRoles();
-		expect(allRoles.some((role) => role._id === 'editor')).toBe(true);
-
-		await auth.deleteRole('editor', 'admin');
-		const deletedRole = await auth.getRoleById('editor');
-		expect(deletedRole).toBeNull();
-	});
-
-	test('Assign and validate permissions', async () => {
-		await syncPermissions();
-		const allPermissions = await getAllPermissions();
-		expect(allPermissions.length).toBeGreaterThan(0);
-
-		const createPermission = await getPermissionByName('Create users');
-		expect(createPermission).toBeDefined();
-		expect(createPermission?.action).toBe(PermissionAction.CREATE);
-
-		const userRole: Role = {
-			_id: 'user',
-			name: 'User',
-			description: 'Regular user',
-			permissions: ['user:read']
-		};
-		await auth.createRole(userRole, 'admin');
-
-		await auth.assignPermissionToRole('User', 'Create users', 'admin');
-		const updatedRole = await auth.getRoleById('user');
-		expect(updatedRole?.permissions).toContain('user:create');
-	});
-
-	test('Check user permissions', async () => {
-		const user: User = {
-			_id: 'user1',
-			email: 'user@example.com',
-			role: 'user',
-			permissions: ['user:read', 'user:create']
-		};
-
-		const { hasPermission: canCreateUser } = await checkUserPermission(user, {
-			contextId: 'user:create',
-			name: 'Create User',
+	beforeEach(() => {
+		// Register test permissions
+		registerPermission({
+			_id: 'content:create',
+			name: 'Create Content',
 			action: PermissionAction.CREATE,
-			contextType: 'user'
+			type: 'content'
 		});
-		expect(canCreateUser).toBe(true);
-
-		const { hasPermission: canDeleteUser } = await checkUserPermission(user, {
-			contextId: 'user:delete',
-			name: 'Delete User',
+		registerPermission({
+			_id: 'content:read',
+			name: 'Read Content',
+			action: PermissionAction.READ,
+			type: 'content'
+		});
+		registerPermission({
+			_id: 'content:delete',
+			name: 'Delete Content',
 			action: PermissionAction.DELETE,
-			contextType: 'user'
+			type: 'content'
 		});
-		expect(canDeleteUser).toBe(false);
 	});
 
-	test('Admin role has all permissions', async () => {
+	test('Check user permissions with roles', () => {
+		const editorUser: User = {
+			_id: 'user1',
+			email: 'editor@example.com',
+			role: 'editor',
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
+		};
+
+		// Editor can create and read content
+		const canCreate = hasPermissionWithRoles(editorUser, 'content:create', mockRoles);
+		expect(canCreate).toBe(true);
+
+		const canRead = hasPermissionWithRoles(editorUser, 'content:read', mockRoles);
+		expect(canRead).toBe(true);
+
+		// Editor cannot delete content
+		const canDelete = hasPermissionWithRoles(editorUser, 'content:delete', mockRoles);
+		expect(canDelete).toBe(false);
+	});
+
+	test('Admin role has all permissions', () => {
 		const adminUser: User = {
 			_id: 'admin1',
 			email: 'admin@example.com',
 			role: 'admin',
-			permissions: []
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
 		};
 
-		const { hasPermission: canDoAnything } = await checkUserPermission(adminUser, {
-			contextId: 'any:action',
-			name: 'Any Action',
-			action: PermissionAction.MANAGE,
-			contextType: 'system'
-		});
+		// Admin should have all permissions regardless of what's in permissions array
+		const canCreate = hasPermissionWithRoles(adminUser, 'content:create', mockRoles);
+		expect(canCreate).toBe(true);
+
+		const canDelete = hasPermissionWithRoles(adminUser, 'content:delete', mockRoles);
+		expect(canDelete).toBe(true);
+
+		const canDoAnything = hasPermissionWithRoles(adminUser, 'any:action', mockRoles);
 		expect(canDoAnything).toBe(true);
 	});
 
-	test('Load user permissions', async () => {
-		const user: User = {
+	test('Permission checking by action and type', () => {
+		const editorUser: User = {
 			_id: 'user1',
-			email: 'user@example.com',
-			role: 'user',
-			permissions: []
+			email: 'editor@example.com',
+			role: 'editor',
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
 		};
 
-		const userPermissions = await loadUserPermissions(user);
-		expect(userPermissions).toBeDefined();
-		expect(Array.isArray(userPermissions)).toBe(true);
-		expect(userPermissions.length).toBeGreaterThan(0);
-		expect(userPermissions[0]).toHaveProperty('_id');
-		expect(userPermissions[0]).toHaveProperty('action');
-		expect(userPermissions[0]).toHaveProperty('type');
+		const canCreate = hasPermissionByAction(editorUser, PermissionAction.CREATE, 'content', undefined, mockRoles);
+		expect(canCreate).toBe(true);
+
+		const canDelete = hasPermissionByAction(editorUser, PermissionAction.DELETE, 'content', undefined, mockRoles);
+		expect(canDelete).toBe(false);
+	});
+
+	test('Admin role detection', () => {
+		const adminUser: User = {
+			_id: 'admin1',
+			email: 'admin@example.com',
+			role: 'admin',
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
+		};
+
+		const editorUser: User = {
+			_id: 'user1',
+			email: 'editor@example.com',
+			role: 'editor',
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
+		};
+
+		expect(isAdminRoleWithRoles(adminUser, mockRoles)).toBe(true);
+		expect(isAdminRoleWithRoles(editorUser, mockRoles)).toBe(false);
+	});
+
+	test('Viewer has limited permissions', () => {
+		const viewerUser: User = {
+			_id: 'user2',
+			email: 'viewer@example.com',
+			role: 'viewer',
+			createdAt: new Date().toISOString(),
+			updatedAt: new Date().toISOString()
+		};
+
+		// Viewer can read
+		const canRead = hasPermissionWithRoles(viewerUser, 'content:read', mockRoles);
+		expect(canRead).toBe(true);
+
+		// Viewer cannot write or create
+		const canWrite = hasPermissionWithRoles(viewerUser, 'content:write', mockRoles);
+		expect(canWrite).toBe(false);
+
+		const canCreate = hasPermissionWithRoles(viewerUser, 'content:create', mockRoles);
+		expect(canCreate).toBe(false);
+	});
+
+	test('Permission registry functions', () => {
+		const allPermissions = getAllPermissions();
+		expect(allPermissions.length).toBeGreaterThan(0);
+
+		// Check that our registered permissions are in the registry
+		const hasContentCreate = allPermissions.some((p: { _id: string }) => p._id === 'content:create');
+		expect(hasContentCreate).toBe(true);
 	});
 });

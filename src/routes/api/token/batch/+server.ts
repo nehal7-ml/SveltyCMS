@@ -18,28 +18,27 @@
  * }
  */
 
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
-import { json, error, type HttpError } from '@sveltejs/kit';
+import { error, json, type HttpError } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 
 // Auth
-// Auth (Database Agnostic)
 import { auth } from '@src/databases/db';
-// TODO: Remove once blockTokens/unblockTokens are added to database-agnostic interface
-import { TokenAdapter } from '@src/auth/mongoDBAuth/tokenAdapter';
 
 // Validation
-import { object, array, string, picklist, parse, type ValiError, minLength } from 'valibot';
+import { object, parse, picklist, string, type ValiError } from 'valibot';
 
 // Cache invalidation
-import { invalidateAdminCache } from '@src/hooks.server';
+import { cacheService } from '@src/databases/CacheService';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
+
+import { array } from 'valibot';
 
 const batchTokenActionSchema = object({
-	tokenIds: array(string([minLength(1, 'Token ID cannot be empty.')])),
+	tokenIds: array(string()),
 	action: picklist(['delete', 'block', 'unblock'], 'Invalid action specified.')
 });
 
@@ -49,7 +48,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		const body = await request.json().catch(() => {
 			throw error(400, 'Invalid JSON in request body');
 		});
-		const { tokenIds, action } = parse(batchTokenActionSchema, body);
+		const parsed = parse(batchTokenActionSchema, body);
+		const { tokenIds, action } = parsed;
+		if (!Array.isArray(tokenIds) || tokenIds.length === 0) {
+			throw error(400, 'At least one token ID is required.');
+		}
 		// Authentication is handled by hooks.server.ts - user presence confirms access
 
 		if (!auth) {
@@ -58,45 +61,53 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 		}
 
 		// --- MULTI-TENANCY SECURITY CHECK ---
-		if (privateEnv.MULTI_TENANT) {
+		if (getPrivateSettingSync('MULTI_TENANT')) {
 			if (!tenantId) {
 				throw error(500, 'Tenant could not be identified for this operation.');
 			}
-			const tokenAdapter = new TokenAdapter();
-			const tokensToVerify = await tokenAdapter.getAllTokens({ token: { $in: tokenIds }, tenantId });
-			if (tokensToVerify.length !== tokenIds.length) {
-				logger.warn(`Attempt to act on tokens outside of tenant`, {
-					userId: user?._id,
-					tenantId,
-					requestedTokenIds: tokenIds
-				});
-				throw error(403, 'Forbidden: One or more tokens do not belong to your tenant or do not exist.');
+			// Use auth.getAllTokens if available to verify ownership
+			try {
+				const filter = { tenantId } as { tenantId?: string };
+				const tokensResult = await auth.getAllTokens(filter);
+				if (!tokensResult.success || !tokensResult.data) {
+					throw new Error('Failed to retrieve tokens');
+				}
+				const tokenSet = new Set(tokensResult.data.map((t) => t.token));
+				const allOwned = tokenIds.every((id) => tokenSet.has(id));
+				if (!allOwned) {
+					logger.warn('Attempt to act on tokens outside of tenant', { userId: user?._id, tenantId, requestedTokenIds: tokenIds });
+					throw error(403, 'Forbidden: One or more tokens do not belong to your tenant or do not exist.');
+				}
+			} catch (verifyErr) {
+				logger.error('Failed to verify tenant token ownership', { error: verifyErr });
+				throw error(500, 'Failed to verify token ownership');
 			}
 		}
 
 		let successMessage = '';
-		const tokenAdapter = new TokenAdapter(); // Re-use the adapter instance
 
+		// Directly invoke database-agnostic methods (now bound in auth adapter)
 		switch (action) {
 			case 'delete': {
-				// The adapter method needs to be tenant-aware internally
-				await tokenAdapter.deleteTokens(tokenIds);
+				await auth.deleteTokens(tokenIds, tenantId);
 				successMessage = 'Tokens deleted successfully.';
 				break;
 			}
 			case 'block': {
-				await tokenAdapter.blockTokens(tokenIds);
+				await auth.blockTokens(tokenIds, tenantId);
 				successMessage = 'Tokens blocked successfully.';
 				break;
 			}
 			case 'unblock': {
-				await tokenAdapter.unblockTokens(tokenIds);
+				await auth.unblockTokens(tokenIds, tenantId);
 				successMessage = 'Tokens unblocked successfully.';
 				break;
 			}
 		}
 		// Invalidate the tokens cache so changes appear immediately in admin area
-		invalidateAdminCache('tokens', tenantId);
+		cacheService.delete('tokens', tenantId).catch((err) => {
+			logger.warn(`Failed to invalidate tokens cache: ${err.message}`);
+		});
 
 		logger.info(`Batch token action '${action}' completed.`, {
 			affectedIds: tokenIds,
@@ -106,8 +117,8 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		return json({ success: true, message: successMessage });
 	} catch (err) {
-		if (err.name === 'ValiError') {
-			const valiError = err as ValiError;
+		if (err && typeof err === 'object' && 'name' in err && err.name === 'ValiError') {
+			const valiError = err as ValiError<typeof batchTokenActionSchema>;
 			const issues = valiError.issues.map((issue) => issue.message).join(', ');
 			logger.warn('Invalid input for token batch API:', { issues });
 			throw error(400, `Invalid input: ${issues}`);

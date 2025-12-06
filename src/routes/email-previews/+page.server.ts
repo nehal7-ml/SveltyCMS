@@ -11,41 +11,48 @@
  *
  */
 
-import { createEmail, emailList, sendEmail } from 'svelte-email-tailwind/preview';
-import type { PageData as AppPageData } from './$types';
+import { createEmail, emailList, sendEmail } from 'better-svelte-email/preview';
 
 // Auth
-import type { User } from '@root/src/auth';
-
-// Roles
-import { roles } from '@root/config/roles';
+import type { User } from '@src/databases/auth/types';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
+import { error } from '@sveltejs/kit';
 
 // Create a global variable to store the fetch function for actions
 let eventFetch: typeof globalThis.fetch;
 
-// Define what your load function expects for user data and email list data
-interface ExpectedPageData extends AppPageData {
-	user?: User | null; // Properties from emailList (components, emails etc.)
-	emails?: { name: string; path: string; [key: string]: unknown }[];
+// Define the return type for the load function.
+// `emailList` from `better-svelte-email/preview` exposes:
+// - `path: string`
+// - `files: string[] | null`
+// - `emails`, `components`, etc. as helper metadata.
+// We mirror that shape here so `PageData` and `EmailPreview` agree.
+interface PreviewData {
+	user?: User | null;
+	path?: string | null;
+	files: string[] | null;
+	emails?: { name: string; path: string }[];
 	components?: Record<string, unknown>;
-	[key: string]: unknown; // Allow other properties from emailList
+	[key: string]: unknown;
 }
 
-export async function load({ locals, fetch }: { locals: App.Locals; fetch: typeof globalThis.fetch }): Promise<ExpectedPageData> {
-	const { user: userData, tenantId, roles: tenantRoles } = locals; // Store the fetch function for use in actions
+export async function load({ locals, fetch }: { locals: App.Locals; fetch: typeof globalThis.fetch }): Promise<PreviewData> {
+	const { user: userData, isAdmin } = locals;
 
-	eventFetch = fetch; // Permission check: only allow admins to view email previews
-	// Use tenant-specific roles from locals if available, otherwise fallback to global roles.
+	// Store the fetch function for use in actions
+	eventFetch = fetch;
 
-	const rolesToUse = tenantRoles && tenantRoles.length > 0 ? tenantRoles : roles;
-	const userRole = rolesToUse.find((role) => role._id === userData?.role);
-	const isAdmin = Boolean(userRole?.isAdmin);
+	// Permission check: only allow admins to view email previews
+	if (!userData) {
+		logger.warn('Unauthenticated attempt to access email previews');
+		throw error(401, 'Authentication required');
+	}
 
-	if (!userData || !isAdmin) {
-		logger.warn(`Unauthorized attempt to access email previews by user: ${userData?.username || 'Guest'}`, { tenantId });
+	if (!isAdmin) {
+		logger.warn(`Unauthorized attempt to access email previews by user: ${userData._id}`);
+		throw error(403, 'Insufficient permissions - admin access required');
 	}
 
 	const emailListData = await emailList({ path: '/src/components/emails' });
@@ -57,7 +64,7 @@ export async function load({ locals, fetch }: { locals: App.Locals; fetch: typeo
 }
 
 export const actions = {
-	...createEmail, // Use the API endpoint for sending emails with proper fetch handling
+	...createEmail,
 	...sendEmail({
 		customSendEmailFunction: async ({ /* from, */ to, subject /* html */ }) => {
 			// Extract template name from subject or use default

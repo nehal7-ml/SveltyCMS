@@ -1,25 +1,14 @@
-import { processModule } from '@root/src/content/utils';
+/**
+ * @file src/routes/(app)/config/collectionbuilder/[action]/[...contentPath]/+page.ts
+ * @description Client-side logic for Collection Builder configuration pages.
+ *
+ * Features:
+ * - Loads data prepared by the corresponding +page.server.ts file.
+ * - Passes server-loaded data to the client for rendering.
+ */
+
 import type { PageLoad } from './$types';
 
-export const load: PageLoad = async ({ params, data }) => {
-	if (params.action === 'new') {
-		return data;
-	}
-
-	const selectedCollection = await processModule(data.collection?.module as string);
-
-	if (!selectedCollection || !selectedCollection?.schema) return;
-	// console.log('selectedCollection', selectedCollection, page.params.collection);
-
-	const collectionData = Object.fromEntries(Object.entries(data.collection).filter(([key]) => key !== 'module'));
-
-	const collection = {
-		...selectedCollection?.schema,
-		...collectionData
-	};
-
-	return {
-		...data,
-		collection
-	};
+export const load: PageLoad = ({ data }) => {
+	return data;
 };

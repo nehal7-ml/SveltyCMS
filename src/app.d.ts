@@ -7,14 +7,15 @@
  * and what to do when importing types
  */
 
-import type { PipelineStage } from 'mongoose';
-import type { Theme } from '@src/databases/dbInterface'; // Ensure correct import path
-import type { User, Role, Token } from '@src/auth/types'; // Import the actual types
-
-declare const __VERSION__: string; // Declare __VERSION__
+import type { Role, Token, User } from '@src/databases/auth/types'; // Import the actual types
+import type { DatabaseAdapter, Theme } from '@src/databases/dbInterface'; // Ensure correct import path
 
 declare global {
 	/// <reference path="./types/**/*.d.ts" />
+
+	// Vite global variables
+	const __FRESH_INSTALL__: boolean;
+
 	declare type Item = import('svelte-dnd-action').Item;
 	declare type DndEvent<ItemType = Item> = import('svelte-dnd-action').DndEvent<ItemType>;
 	declare namespace svelteHTML {
@@ -29,25 +30,30 @@ declare global {
 		// interface PageData {}
 		// interface Platform {}
 		interface Locals {
-			user: {
-				_id: string; //mongodb
-				email: string;
-				role: string;
-				avatar?: string;
-				permissions: string[];
-				isAdmin?: boolean; // Added this property
-				// Add other relevant user properties here
-			} | null;
+			user: User | null;
 			collections?: unknown; // Replace with your actual Collections type if available
-			permissions: string[]; // Changed from optional to required, and removed 'any'
-			session_id?: string; // Added this property
-			isFirstUser: boolean; // Added this property
-			isAdmin: boolean; // Added this property for component access
-			hasManageUsersPermission: boolean; // Added this property
+			permissions: string[]; // Array of user permissions
+			session_id?: string;
+			// Authorization flags
+			isFirstUser: boolean; // True when no users exist in database (setup flow)
+			isAdmin: boolean; // True when user's role has admin privileges
+			hasManageUsersPermission: boolean; // True when user is admin OR has "manage user" permission
+			// Data loaded by authorization hook
 			roles: Role[]; // Using imported Role type
 			allUsers: User[]; // Using imported User type
 			allTokens: Token[]; // Using imported Token type
 			theme: Theme | null; // Ensure 'theme' is correctly typed
+			customCss: string; // The active theme's custom CSS
+			tenantId?: string; // Added for multi-tenancy support
+			darkMode: boolean; // Dark mode preference from cookies
+			dbAdapter?: DatabaseAdapter | null; // Database adapter for adapter-agnostic operations
+			cspNonce?: string; // CSP nonce for this request (managed by SvelteKit)
+			// Setup hook caching - prevents duplicate checks/logs per request
+			__setupConfigExists?: boolean; // Caches isSetupComplete() result per request
+			__setupLogged?: boolean; // Prevents duplicate "config missing" warnings
+			__setupRedirectLogged?: boolean; // Prevents duplicate setup redirect logs
+			__setupLoginRedirectLogged?: boolean; // Prevents duplicate login redirect logs
+			degradedServices?: string[]; // List of unhealthy services (populated by handleSystemState in DEGRADED state)
 		}
 	}
 
@@ -60,6 +66,9 @@ declare global {
 		message: string;
 		data: unknown;
 	};
+
+	type AggregationFilterStage = Record<string, unknown>;
+	type AggregationSortStage = Record<string, unknown>;
 
 	// Defines the DISPLAY type, which represents a function that takes an object with data, collection, field, entry, and contentLanguage properties and returns a promise of any.
 	type DISPLAY = (({ data: unknown, collection: unknown, field: unknown, entry: unknown, contentLanguage: string }) => Promise<unknown>) & {
@@ -85,12 +94,22 @@ declare global {
 
 	/**
 	 * Defines the Aggregations type, which represents an object with optional methods for performing transformations, filters, and sorts on data.
-	 * The filters method takes a field, content language, and filter, and returns a promise of an array of pipeline stages.
-	 * The sorts method takes a field, content language, and sort value, and returns a promise of an array of pipeline stages.
+	 * The filters method takes a field, content language, and filter, and returns a promise of an array of aggregation stages.
+	 * The sorts method takes a field, content language, and sort value, and returns a promise of an aggregation stage object.
 	 */
 	type Aggregations = {
-		filters?: ({ field, contentLanguage, filter }: { field: unknown; contentLanguage: string; filter: string }) => Promise<PipelineStage[]>;
-		sorts?: ({ field, contentLanguage, sort }: { field: unknown; contentLanguage: string; sort: number }) => Promise<PipelineStage[]>;
+		filters?: ({ field, contentLanguage, filter }: { field: unknown; contentLanguage: string; filter: string }) => Promise<AggregationFilterStage[]>;
+		sorts?: ({
+			field,
+			contentLanguage,
+			sort,
+			sortDirection
+		}: {
+			field: unknown;
+			contentLanguage: string;
+			sort?: number;
+			sortDirection?: 1 | -1 | 'asc' | 'desc';
+		}) => Promise<AggregationSortStage | AggregationSortStage[]>;
 	};
 
 	// Defines the File type, which represents an object with an optional path property.

@@ -3,7 +3,13 @@
 @component
 **FileInput component**
 
-Features:
+### Props
+- `value`: File | MediaImage | undefined - Currently selected file or media image.
+- `multiple`: boolean - Allow multiple file selection.
+- `show`: boolean - Whether to show the file input area.
+- `className`: string - Additional CSS classes for styling.
+
+### Features
 - File input 
 - Multiple file input
 - Drag and drop
@@ -12,7 +18,6 @@ Features:
 <script lang="ts">
 	import type { MediaImage } from '@utils/media/mediaModels';
 	import { twMerge } from 'tailwind-merge';
-
 	// Component
 	import Media from '@components/Media.svelte';
 
@@ -20,17 +25,10 @@ Features:
 	import * as m from '@src/paraglide/messages';
 
 	// Props
-	const props = $props();
-
-	// Create state variables for bindable props
-	let value = $state<File | MediaImage | undefined>(props.value);
-	let multiple = $state(props.multiple ?? false);
-	let show = $state(props.show ?? true);
-	const className = props.className ?? '';
-	const onChange = props.onChange;
+	let { value = $bindable(), multiple = $bindable(false), show = $bindable(true), className = '', onChange } = $props();
 
 	// Declare reactive state with $state
-	let input = $state<HTMLInputElement | null>(null);
+	let input: HTMLInputElement | null = $state(null);
 	let showMedia = $state(false);
 
 	// Handle media selection
@@ -100,7 +98,7 @@ Features:
 	>
 		<div class="grid grid-cols-6 items-center p-4">
 			<iconify-icon icon="fa6-solid:file-arrow-up" width="40"></iconify-icon>
-			<span class="text-white"> testdjksdalksdjl</span>
+			<span class="text-white"> test</span>
 
 			<div class="col-span-5">
 				{#if !show}

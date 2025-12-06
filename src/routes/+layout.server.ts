@@ -1,27 +1,61 @@
 /**
  * @file src/routes/+layout.server.ts
  * @description Root server-side layout handler.
- * This runs for every request and is responsible for establishing the
- * correct language and user/tenant context for the entire application.
+ *
+ * ### Features
+ * - Settings Loading
+ * - User Management
+ * - Theme Management
+ * - Content Versioning
+ *
+ * ### Security
+ * - Settings Loading is cached
+ * - User Management is cached
+ * - Theme Management is cached
+ * - Content Versioning is cached
  */
-import { publicEnv } from '@root/config/public';
-import { privateEnv } from '@root/config/private';
+import { version } from '../../package.json';
+import { loadSettingsCache, getPrivateSettingSync } from '@src/services/settingsService';
 import type { LayoutServerLoad } from './$types';
 import type { Locale } from '@src/paraglide/runtime';
 
 export const load: LayoutServerLoad = async ({ cookies, locals }) => {
-	// Determine the system language from cookies or fall back to the public environment default.
-	const systemLanguage = (cookies.get('systemLanguage') as Locale) ?? (publicEnv.BASE_LOCALE as Locale); // Determine the content language from cookies or fall back to the public environment default.
+	// Load settings from database cache (ensures cache is populated)
+	const { public: publicSettings } = await loadSettingsCache();
 
-	const contentLanguage = (cookies.get('contentLanguage') as Locale) ?? (publicEnv.DEFAULT_CONTENT_LANGUAGE as Locale); // Return the resolved languages and all relevant user/tenant context from locals
-	// so they are available in the `data` prop for all components and pages.
+	// Extract values for server-side logic
+	const baseLocale = publicSettings.BASE_LOCALE;
+	const defaultContentLanguage = publicSettings.DEFAULT_CONTENT_LANGUAGE;
+
+	// Private settings only accessible server-side
+	const isMultiTenant = getPrivateSettingSync('MULTI_TENANT');
+
+	const systemLanguage = (cookies.get('systemLanguage') as Locale) ?? baseLocale;
+	const contentLanguage = (cookies.get('contentLanguage') as Locale) ?? defaultContentLanguage;
+
+	// --- Content System Hydration ---
+	const { contentManager } = await import('@src/content/ContentManager');
+	const navigationStructure = await contentManager.getNavigationStructureProgressive({
+		maxDepth: 1,
+		tenantId: locals.tenantId
+	});
+	const contentVersion = contentManager.getContentVersion();
 
 	return {
 		systemLanguage,
 		contentLanguage,
 		user: locals.user ?? null,
 		isAdmin: locals.isAdmin ?? false,
-		isMultiTenant: privateEnv.MULTI_TENANT ?? false,
-		tenantId: locals.tenantId ?? null
+		isMultiTenant,
+		cspNonce: locals.cspNonce,
+		tenantId: locals.tenantId ?? null,
+		darkMode: locals.darkMode,
+		navigationStructure,
+		contentVersion,
+		// Pass public settings to client for store initialization
+		settings: {
+			...publicSettings,
+			PKG_VERSION: version
+		}
 	};
 };

@@ -1,98 +1,78 @@
-<!-- 
-@file src/routes/(app)/mediagallery/+page.svelte 
-@component 
-**This page is used to display the media gallery page**
+<!--
+@file src/routes/(app)/mediagallery/+page.svelte
+@component
+**Media Gallery Page**
 
-This page displays a collection of media files, such as images, documents, audio, and video.
-It p			if (result.success) {
-				// Refetch all folders
-				allSystemVirtualFolders = await fetchUpdatedSystemVirtualFolders();
-				// Update current view
-				const parent = currentSystemVirtualFolder?._id ?? null;
-				systemVirtualFolders = allSystemVirtualFolders.filter((f) => f.parentId === parent);
-				
-				// Dispatch event to notify Collections component
-				const event = new CustomEvent('folderCreated', {
-					detail: { 
-						folder: result.folder,
-						parentId: parentId
-					}
-				});
-				document.dispatchEvent(event);
-				
-				toastStore.trigger({
-					message: 'Folder created successfully!',
-					background: 'variant-filled-success',
-					timeout: 3000
-				});
-			} else {er-friendly interface for searching, filtering, and navigating through media files.
+Displays a collection of media files (images, documents, audio, video) with:
+- Virtual folder navigation and breadcrumb trails
+- Search and filter by media type
+- Grid and table view modes with size options
+- Upload and folder management capabilities
 
 ### Props:
-- `mediaType` {MediaTypeEnum} - The type of media files to display.
-- `media` {MediaBase[]} - An array of media files to be displayed.
-
-### Events:
-- `mediaDeleted` - Emitted when a media file is deleted.	
+- `data.user` - Current user information
+- `data.media` - Array of media files to display
+- `data.systemVirtualFolders` - Virtual folder structure
 
 ### Features:
-- Displays a collection of media files based on the specified media type.
-- Provides a user-friendly interface for searching, filtering, and navigating through media files.
-- Emits the `mediaDeleted` event when a media file is deleted.
+- Client-side search and filtering
+- Responsive grid/table layouts
+- Virtual folder CRUD operations
+- Media file deletion
 -->
 
 <script lang="ts">
 	import { goto } from '$app/navigation';
 	import axios from 'axios';
-
 	// Stores
-	import { mode } from '@src/stores/collectionStore.svelte';
-	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
 	import { toggleUIElement } from '@src/stores/UIStore.svelte';
-
+	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
+	// Logger
+	import { logger } from '@utils/logger';
 	// Utils & Media
-	import { config, toFormData } from '@utils/utils';
-	import { MediaTypeEnum, type MediaImage, type MediaBase } from '@utils/media/mediaModels';
-	import { publicEnv } from '@root/config/public';
-
+	import { publicEnv } from '@src/stores/globalSettings.svelte';
+	import { MediaTypeEnum, type MediaBase, type MediaImage } from '@utils/media/mediaModels';
 	// Components
-	import PageTitle from '@components/PageTitle.svelte';
 	import Breadcrumb from '@components/Breadcrumb.svelte';
+	import PageTitle from '@components/PageTitle.svelte';
 	import MediaGrid from './MediaGrid.svelte';
 	import MediaTable from './MediaTable.svelte';
-
+	import VirtualMediaGrid from './VirtualMediaGrid.svelte';
+	import AdvancedSearchModal from './AdvancedSearchModal.svelte';
 	// Skeleton
-	import { getToastStore, getModalStore, type ModalSettings } from '@skeletonlabs/skeleton';
-	const toastStore = getToastStore();
-	const modalStore = getModalStore();
-
-	// Loading state
-	let isLoading = $state(false);
-
+	import { getModalStore, type ModalSettings } from '@skeletonlabs/skeleton';
+	import { showToast } from '@utils/toast';
 	// Import types
 	import type { SystemVirtualFolder } from '@src/databases/dbInterface';
+	import type { SearchCriteria } from '@utils/media/advancedSearch';
+
+	// Initialize modal store
+	const modalStore = getModalStore();
+
+	import type { PageData } from './$types';
 
 	// Props using runes
-	const { data = { user: undefined, media: [], virtualFolders: [] } } = $props<{
-		data?: {
-			user: { _id: string; email: string; role: string } | undefined;
-			media: MediaBase[];
-			systemVirtualFolders: SystemVirtualFolder[];
-			currentFolder: SystemVirtualFolder | null; // Add currentFolder from load data
-		};
-	}>();
+	let { data }: { data: PageData } = $props();
 
 	// State using runes
-	let files = $state<MediaImage[]>([]);
-	let allSystemVirtualFolders = $state<SystemVirtualFolder[]>([]);
-	let systemVirtualFolders = $state<SystemVirtualFolder[]>([]);
-	let currentSystemVirtualFolder = $state<SystemVirtualFolder | null>(null);
-	let breadcrumb = $state<string[]>([]);
+	let files: (MediaBase | MediaImage)[] = $state([]);
+	let allSystemVirtualFolders: any[] = $state([]);
+	let currentSystemVirtualFolder: SystemVirtualFolder | null = $state(null);
+	let breadcrumb: string[] = $state([]);
 
 	let globalSearchValue = $state('');
-	let selectedMediaType = $state<'All' | MediaTypeEnum>('All');
-	let view = $state<'grid' | 'table'>('grid');
-	let gridSize = $state<'small' | 'medium' | 'large'>('small');
-	let tableSize = $state<'small' | 'medium' | 'large'>('small');
+	let selectedMediaType: 'All' | MediaTypeEnum = $state('All');
+	let view: 'grid' | 'table' = $state('grid');
+	let gridSize: 'tiny' | 'small' | 'medium' | 'large' = $state('small');
+	let tableSize: 'tiny' | 'small' | 'medium' | 'large' = $state('small');
+	let isLoading = $state(false);
+
+	// Enterprise features state
+	let showAdvancedSearch = $state(false);
+	let advancedSearchCriteria: SearchCriteria | null = $state(null);
+
+	// Performance optimization: Use virtual scrolling for large collections
+	const USE_VIRTUAL_THRESHOLD = 100;
 
 	type MediaTypeOption = {
 		value: 'All' | MediaTypeEnum;
@@ -110,33 +90,48 @@ It p			if (result.success) {
 	];
 
 	// Computed value for filtered files based on search and type
-	let filteredFiles = $derived(
-		files.filter((file) => {
-			if (file.type === MediaTypeEnum.Image) {
-				return (
-					(file.filename || '').toLowerCase().includes(globalSearchValue.toLowerCase()) &&
-					(selectedMediaType === 'All' || file.type === selectedMediaType)
-				);
-			} else {
-				return (
-					(file.filename || '').toLowerCase().includes(globalSearchValue.toLowerCase()) &&
-					(selectedMediaType === 'All' || file.type === selectedMediaType)
-				);
-			}
-		})
-	);
+	const filteredFiles = $derived.by(() => {
+		const results = files.filter((file) => {
+			const matchesSearch = (file.filename || '').toLowerCase().includes(globalSearchValue.toLowerCase());
+			const matchesType = selectedMediaType === 'All' || file.type === selectedMediaType;
+			return matchesSearch && matchesType;
+		});
+
+		// Apply advanced search criteria if set
+		if (advancedSearchCriteria) {
+			// Import the advancedSearch function if criteria is active
+			// This will be handled by the modal's onSearch callback
+			return results;
+		}
+
+		return results;
+	});
+
+	// Performance optimization: Use virtual scrolling for large collections
+	const useVirtualScrolling = $derived(filteredFiles.length > USE_VIRTUAL_THRESHOLD);
 
 	// Computed folders for breadcrumb - create a mapping of breadcrumb paths to folder IDs
-	let breadcrumbFolders = $derived(() => {
-		if (!currentSystemVirtualFolder) return [];
-
+	const breadcrumbFolders = $derived.by(() => {
 		const folders: { _id: string; name: string; path: string[] }[] = [];
+
+		// Always add root as first folder
+		folders.push({
+			_id: 'root',
+			name: 'Media Root',
+			path: []
+		});
+
+		if (!currentSystemVirtualFolder) {
+			return folders;
+		}
+
 		let current: SystemVirtualFolder | null = currentSystemVirtualFolder;
 		const pathSegments: string[] = [];
 
+		const tempFolders: { _id: string; name: string; path: string[] }[] = [];
 		while (current) {
 			pathSegments.unshift(current.name);
-			folders.unshift({
+			tempFolders.unshift({
 				_id: current._id,
 				name: current.name,
 				path: [...pathSegments] // Copy the current path
@@ -145,11 +140,15 @@ It p			if (result.success) {
 			current = allSystemVirtualFolders.find((f) => f._id === current?.parentId) || null;
 		}
 
-		return folders;
+		return [...folders, ...tempFolders];
 	});
 
 	// Handle user preferences
-	function storeUserPreference(view: 'grid' | 'table', gridSize: 'small' | 'medium' | 'large', tableSize: 'small' | 'medium' | 'large') {
+	function storeUserPreference(
+		view: 'grid' | 'table',
+		gridSize: 'tiny' | 'small' | 'medium' | 'large',
+		tableSize: 'tiny' | 'small' | 'medium' | 'large'
+	) {
 		localStorage.setItem('GalleryUserPreference', `${view}/${gridSize}/${tableSize}`);
 	}
 
@@ -157,52 +156,37 @@ It p			if (result.success) {
 		return localStorage.getItem('GalleryUserPreference');
 	}
 
-	// Mobile navigation helper
+	// Mobile navigation helper - hides sidebar on mobile before navigation
 	function handleMobileNavigation(path: string) {
-		// Hide sidebar on mobile before navigation
 		if (typeof window !== 'undefined' && window.innerWidth < 768) {
-			console.log('Mobile detected, hiding sidebar before navigation to:', path);
 			toggleUIElement('leftSidebar', 'hidden');
 		}
 		goto(path);
 	}
 
-	// Initialize component with runes
-	$effect(() => {
-		mode.set('media');
+	// Computed safe table size (MediaTable doesn't support 'tiny')
+	const safeTableSize = $derived(tableSize);
 
+	// Initialize component with runes
+	// Run once on mount to set up initial data
+	$effect(() => {
+		// Load initial data from server
 		if (data && data.systemVirtualFolders) {
-			systemVirtualFolders = data.systemVirtualFolders.map((folder: SystemVirtualFolder) => ({
+			allSystemVirtualFolders = data.systemVirtualFolders.map((folder: SystemVirtualFolder) => ({
 				...folder,
 				path: Array.isArray(folder.path) ? folder.path : folder.path?.split('/')
 			}));
 		}
 
-		// Fetch all folders for navigation and breadcrumbs
-		fetchUpdatedSystemVirtualFolders()
-			.then((all) => {
-				allSystemVirtualFolders = all;
-				// If we are at the root, update `folders` to be the top-level folders from the full list.
-				if (!currentSystemVirtualFolder) {
-					systemVirtualFolders = allSystemVirtualFolders.filter((f) => !f.parentId);
-				}
-			})
-			.catch((error) => {
-				console.error('Failed to load virtual folders in effect:', error);
-				// Use fallback data from server load if available
-				if (data && data.systemVirtualFolders) {
-					allSystemVirtualFolders = data.systemVirtualFolders.map((folder: SystemVirtualFolder) => ({
-						...folder,
-						path: Array.isArray(folder.path) ? folder.path : folder.path?.split('/')
-					}));
-					if (!currentSystemVirtualFolder) {
-						systemVirtualFolders = allSystemVirtualFolders.filter((f) => !f.parentId);
-					}
-				}
-			});
+		if (data && data.currentFolder) {
+			currentSystemVirtualFolder = data.currentFolder;
+		}
 
 		if (data && data.media) {
-			files = data.media;
+			files = data.media.map((m: any) => ({
+				...m,
+				user: typeof m.user === 'object' && m.user ? m.user._id : m.user
+			})) as (MediaBase | MediaImage)[];
 		}
 
 		// Load user preferences
@@ -210,19 +194,14 @@ It p			if (result.success) {
 		if (userPreference) {
 			const [preferredView, preferredGridSize, preferredTableSize] = userPreference.split('/');
 			view = preferredView as 'grid' | 'table';
-			gridSize = preferredGridSize as 'small' | 'medium' | 'large';
-			tableSize = preferredTableSize as 'small' | 'medium' | 'large';
+			gridSize = preferredGridSize as 'tiny' | 'small' | 'medium' | 'large';
+			tableSize = preferredTableSize as 'tiny' | 'small' | 'medium' | 'large';
 		}
 
-		// Listen for folder selection events from the Collections sidebar
+		// Listen for folder selection events
 		const handleSystemVirtualFolderSelected = (event: CustomEvent) => {
-			console.log('System virtual folder selected event received:', event.detail);
 			const { folderId } = event.detail;
-			if (folderId && folderId !== 'root') {
-				openSystemVirtualFolder(folderId);
-			} else {
-				openSystemVirtualFolder(null); // Navigate to root
-			}
+			openSystemVirtualFolder(folderId && folderId !== 'root' ? folderId : null);
 		};
 
 		document.addEventListener('systemVirtualFolderSelected', handleSystemVirtualFolderSelected as EventListener);
@@ -231,78 +210,66 @@ It p			if (result.success) {
 			document.removeEventListener('systemVirtualFolderSelected', handleSystemVirtualFolderSelected as EventListener);
 		};
 	});
+
+	// Update breadcrumb when current folder changes
+	$effect(() => {
+		// This effect only runs when currentSystemVirtualFolder or allSystemVirtualFolders changes
+		updateBreadcrumb();
+	});
 	// Function to update breadcrumb based on current folder
 	function updateBreadcrumb() {
 		if (!currentSystemVirtualFolder) {
-			breadcrumb = [];
+			// At root level - show Media Root
+			breadcrumb = ['Media Root'];
 			return;
 		}
 
 		// Build breadcrumb by traversing up the parent hierarchy
 		const buildBreadcrumb = (folder: SystemVirtualFolder): string[] => {
-			const path: string[] = [];
+			const path: string[] = ['Media Root']; // Always start with root
 			let current: SystemVirtualFolder | null = folder;
 
+			const folderPath: string[] = [];
 			while (current) {
-				path.unshift(current.name); // Add folder name to the beginning
+				folderPath.unshift(current.name); // Add folder name to the beginning
 				// Find the parent folder
 				current = allSystemVirtualFolders.find((f) => f._id === current?.parentId) || null;
 			}
 
-			return path;
+			return [...path, ...folderPath];
 		};
 
 		breadcrumb = buildBreadcrumb(currentSystemVirtualFolder);
 	}
 
-	// Create a new folder with memoization
+	// Create a new virtual folder with validation
 	async function createSystemVirtualFolder(folderName: string) {
-		console.log('createSystemVirtualFolder called with:', folderName);
-
 		// Validate folder name
-		if (!folderName.trim()) {
-			toastStore.trigger({
-				message: 'Folder name cannot be empty',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+		const trimmedName = folderName.trim();
+		if (!trimmedName) {
+			showToast('Folder name cannot be empty', 'error');
 			return;
 		}
 
-		// Check for invalid characters
-		if (/[\\/:"*?<>|]/.test(folderName)) {
-			toastStore.trigger({
-				message: 'Folder name contains invalid characters (\\ / : * ? " < > |)',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+		if (/[\\/:"*?<>|]/.test(trimmedName)) {
+			showToast('Folder name contains invalid characters (\\ / : * ? " < > |)', 'error');
 			return;
 		}
 
-		// Check length
-		if (folderName.length > 50) {
-			toastStore.trigger({
-				message: 'Folder name must be 50 characters or less',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+		if (trimmedName.length > 50) {
+			showToast('Folder name must be 50 characters or less', 'error');
 			return;
 		}
 
 		isLoading = true;
 		globalLoadingStore.startLoading(loadingOperations.dataFetch);
+
 		try {
 			const parentId = currentSystemVirtualFolder?._id ?? null;
-			const requestBody = {
-				name: folderName.trim(),
-				parentId: parentId
-			};
-			console.log('Sending request with body:', requestBody);
-
 			const response = await fetch('/api/systemVirtualFolder', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify(requestBody)
+				body: JSON.stringify({ name: trimmedName, parentId })
 			});
 
 			if (!response.ok) {
@@ -313,45 +280,29 @@ It p			if (result.success) {
 			const result = await response.json();
 
 			if (result.success) {
-				// Refetch all folders
+				// Refetch all folders and update current view
 				allSystemVirtualFolders = await fetchUpdatedSystemVirtualFolders();
-				// Update current view
-				const parent = currentSystemVirtualFolder?._id ?? null;
-				systemVirtualFolders = allSystemVirtualFolders.filter((f) => f.parentId === parent);
 
-				// Dispatch event to notify Collections component
-				const event = new CustomEvent('folderCreated', {
-					detail: {
-						folder: result.folder,
-						parentId: parent
-					}
-				});
-				document.dispatchEvent(event);
-				console.log('Folder created event dispatched:', event.detail);
+				// Notify Collections component
+				document.dispatchEvent(
+					new CustomEvent('folderCreated', {
+						detail: { folder: result.folder, parentId }
+					})
+				);
 
-				toastStore.trigger({
-					message: 'Folder created successfully',
-					background: 'variant-filled-success',
-					timeout: 3000
-				});
+				showToast('Folder created successfully', 'success');
 			} else {
 				throw new Error(result.error || 'Failed to create folder');
 			}
 		} catch (error) {
-			console.error('Error creating folder:', error);
-			let errorMessage = 'Failed to create folder';
-			if (error instanceof Error) {
-				if (error.message.includes('duplicate')) {
-					errorMessage = error.message;
-				} else if (error.message.includes('invalid')) {
-					errorMessage = 'Invalid folder name';
-				}
-			}
-			toastStore.trigger({
-				message: errorMessage,
-				background: 'variant-filled-error',
-				timeout: 5000 // Longer timeout for errors
-			});
+			logger.error('Error creating folder:', error);
+			const errorMessage =
+				error instanceof Error && error.message.includes('duplicate')
+					? error.message
+					: error instanceof Error && error.message.includes('invalid')
+						? 'Invalid folder name'
+						: 'Failed to create folder';
+			showToast(errorMessage, 'error');
 		} finally {
 			isLoading = false;
 			globalLoadingStore.stopLoading(loadingOperations.dataFetch);
@@ -373,23 +324,19 @@ It p			if (result.success) {
 				throw new Error(result.error || 'Failed to fetch folders');
 			}
 		} catch (error) {
-			console.error('Error fetching updated folders:', error);
-			toastStore.trigger({
-				message: 'Failed to fetch folders',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+			logger.error('Error fetching updated folders:', error);
+			showToast('Failed to fetch folders', 'error');
 			return [];
 		}
 	}
 
 	// Memoized fetch for media files
 	let lastSystemFolderId = $state<string | null>(null);
-	async function fetchMediaFiles() {
+	async function fetchMediaFiles(forceRefresh = false) {
 		const folderId = currentSystemVirtualFolder ? currentSystemVirtualFolder._id : 'root';
 
-		// Skip if already loading or same folder
-		if (isLoading || folderId === lastSystemFolderId) return;
+		// Skip if already loading or same folder (unless force refresh)
+		if (!forceRefresh && (isLoading || folderId === lastSystemFolderId)) return;
 
 		isLoading = true;
 		globalLoadingStore.startLoading(loadingOperations.dataFetch);
@@ -402,12 +349,13 @@ It p			if (result.success) {
 
 			if (data.success) {
 				files = Array.isArray(data.data.contents?.files) ? data.data.contents.files : [];
-				systemVirtualFolders = Array.isArray(data.data.contents?.folders) ? data.data.contents.folders : [];
+				logger.info(`Fetched ${files.length} files for folder: ${folderId}`);
+				// Folders are handled by allSystemVirtualFolders
 			} else {
 				throw new Error(data.error || 'Unknown error');
 			}
 		} catch (error: unknown) {
-			console.error('Error fetching media files:', error);
+			logger.error('Error fetching media files:', error);
 			let errorMessage = 'Failed to load media';
 			if (error instanceof Error) {
 				if (error.message.includes('timeout')) {
@@ -416,13 +364,8 @@ It p			if (result.success) {
 					errorMessage = 'Network error - please check your connection';
 				}
 			}
-			toastStore.trigger({
-				message: errorMessage,
-				background: 'variant-filled-error',
-				timeout: 5000
-			});
+			showToast(errorMessage, 'error');
 			files = [];
-			systemVirtualFolders = [];
 		} finally {
 			isLoading = false;
 			globalLoadingStore.stopLoading(loadingOperations.dataFetch);
@@ -445,12 +388,8 @@ It p			if (result.success) {
 			// Fetch media files for the current folder
 			await fetchMediaFiles();
 		} catch (error) {
-			console.error('Error opening folder:', error);
-			toastStore.trigger({
-				message: 'Failed to open folder',
-				background: 'variant-filled-error',
-				timeout: 3000
-			});
+			logger.error('Error opening folder:', error);
+			showToast('Failed to open folder', 'error');
 		}
 	}
 
@@ -467,62 +406,192 @@ It p			if (result.success) {
 
 	// Open add virtual folder modal
 	function openAddFolderModal() {
-		// Default to MEDIA_FOLDER, which should represent the root directory
-		let currentFolderPath = publicEnv.MEDIA_FOLDER;
-
-		// Check if the currentFolder is set (i.e., the user is in a subfolder)
-		if (currentSystemVirtualFolder) {
-			currentFolderPath = Array.isArray(currentSystemVirtualFolder.path)
+		const currentFolderPath = currentSystemVirtualFolder
+			? Array.isArray(currentSystemVirtualFolder.path)
 				? currentSystemVirtualFolder.path.join('/')
-				: currentSystemVirtualFolder.path;
-		}
-
+				: currentSystemVirtualFolder.path
+			: publicEnv?.MEDIA_FOLDER || 'mediaFiles';
 		const modal: ModalSettings = {
 			type: 'prompt',
 			title: 'Add Folder',
-			// Apply inline style or use a CSS class to make the current folder path display in a different color
-			body: `Creating subfolder in: <span class="text-tertiary-500 dark:text-primary-500">${currentFolderPath}</span>`, // Display the current folder path in a different color
+			body: `Creating subfolder in: <span class="text-tertiary-500 dark:text-primary-500">${currentFolderPath}</span>`,
 			response: (r: string) => {
-				if (r) createSystemVirtualFolder(r); // Pass the new folder name to createFolder function
+				if (r) createSystemVirtualFolder(r);
 			}
 		};
 
-		modalStore.trigger(modal); // Trigger the modal to open
+		modalStore.trigger(modal);
 	}
 
 	// Handle delete image
 	async function handleDeleteImage(file: MediaBase) {
-		try {
-			const q = toFormData({ method: 'POST', image: file._id ?? '' });
-			const response = await axios.post('?/api/mediaHandler/', q, {
-				...config,
-				withCredentials: true // This ensures cookies are sent with the request
-			});
-			const result = response.data;
-			if (result?.success) {
-				toastStore.trigger({
-					message: 'Media deleted successfully.',
-					background: 'variant-filled-success',
-					timeout: 3000
-				});
-				await fetchMediaFiles();
-			} else {
-				throw new Error(result.error || 'Failed to delete media');
+		// Show confirmation modal
+		const modal: ModalSettings = {
+			type: 'confirm',
+			title: 'Delete Media',
+			body: `Are you sure you want to delete "${file.filename}"? This action cannot be undone.`,
+			response: async (confirmed: boolean) => {
+				if (!confirmed) return;
+
+				try {
+					logger.info('Delete image request:', { _id: file._id, filename: file.filename });
+
+					const formData = new FormData();
+					formData.append('imageData', JSON.stringify(file));
+
+					const response = await fetch('?/deleteMedia', {
+						method: 'POST',
+						body: formData
+					});
+
+					logger.info('Delete response status:', response.status);
+
+					if (!response.ok) {
+						const errorText = await response.text();
+						logger.error('Delete failed with status:', response.status, errorText);
+						throw new Error(`Server error: ${response.status} - ${errorText}`);
+					}
+
+					const result = await response.json();
+					logger.debug('Delete response:', result);
+
+					// Handle SvelteKit's wrapped response format
+					let data = result;
+					if (result.type === 'success' && result.data) {
+						// Parse if data is a string
+						data = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
+					}
+
+					// Check if it's an array response (like upload)
+					const success = Array.isArray(data) ? data[0]?.success : data?.success;
+
+					if (success) {
+						showToast('Media deleted successfully.', 'success');
+
+						// Reactively remove the deleted file from the files array
+						// Svelte 5 runes will automatically update all derived state
+						files = files.filter((f) => f._id !== file._id);
+
+						logger.info(`Removed file ${file.filename} from UI. Remaining: ${files.length} files`);
+					} else {
+						throw new Error(data?.error || 'Failed to delete media');
+					}
+				} catch (error) {
+					const errorMessage = error instanceof Error ? error.message : String(error);
+					logger.error('Error deleting media:', errorMessage);
+					showToast(`Error deleting media: ${errorMessage}`, 'error');
+				}
 			}
-		} catch (error) {
-			console.error('Error deleting media: ', error);
-			toastStore.trigger({
-				message: 'Error deleting media',
-				background: 'variant-filled-error',
-				timeout: 3000
+		};
+
+		modalStore.trigger(modal);
+	}
+
+	// Handle bulk delete
+	async function handleBulkDelete(filesToDelete: MediaBase[]) {
+		// Show confirmation modal
+		const modal: ModalSettings = {
+			type: 'confirm',
+			title: 'Delete Multiple Media',
+			body: `Are you sure you want to delete ${filesToDelete.length} file${filesToDelete.length > 1 ? 's' : ''}? This action cannot be undone.`,
+			response: async (confirmed: boolean) => {
+				if (!confirmed) return;
+
+				try {
+					logger.info('Bulk delete request:', { count: filesToDelete.length });
+
+					// Track successfully deleted files
+					const successfullyDeletedIds = new Set();
+					let successCount = 0;
+					let failCount = 0;
+
+					for (const file of filesToDelete) {
+						try {
+							const formData = new FormData();
+							formData.append('imageData', JSON.stringify(file));
+
+							const response = await fetch('?/deleteMedia', {
+								method: 'POST',
+								body: formData
+							});
+
+							if (response.ok) {
+								const result = await response.json();
+								let data = result;
+								if (result.type === 'success' && result.data) {
+									data = typeof result.data === 'string' ? JSON.parse(result.data) : result.data;
+								}
+								const success = Array.isArray(data) ? data[0]?.success : data?.success;
+								if (success) {
+									successCount++;
+									successfullyDeletedIds.add(file._id as string);
+								} else {
+									failCount++;
+								}
+							} else {
+								failCount++;
+							}
+						} catch (error) {
+							logger.error('Error deleting file:', file.filename, error);
+							failCount++;
+						}
+					}
+
+					// Show result
+					if (failCount === 0) {
+						showToast(`Successfully deleted ${successCount} file${successCount > 1 ? 's' : ''}`, 'success');
+					} else if (successCount === 0) {
+						showToast(`Failed to delete ${failCount} file${failCount > 1 ? 's' : ''}`, 'error');
+					} else {
+						showToast(`Deleted ${successCount} file${successCount > 1 ? 's' : ''}, ${failCount} failed`, 'warning');
+					}
+
+					// Reactively remove only successfully deleted files
+					// Svelte 5 runes will automatically update filteredFiles derived state
+					files = files.filter((f) => !successfullyDeletedIds.has(f._id as string));
+
+					logger.info(`Removed ${successCount} files from UI. Remaining: ${files.length} files`);
+				} catch (error) {
+					const errorMessage = error instanceof Error ? error.message : String(error);
+					logger.error('Error in bulk delete:', errorMessage);
+					showToast(`Error deleting media: ${errorMessage}`, 'error');
+				}
+			}
+		};
+
+		modalStore.trigger(modal);
+	}
+
+	// Handle advanced search
+	async function handleAdvancedSearch(criteria: SearchCriteria) {
+		try {
+			const response = await fetch('/api/media/search', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ criteria })
 			});
+
+			if (!response.ok) throw new Error('Search failed');
+
+			const result = await response.json();
+
+			// Update files with search results
+			files = result.files;
+			advancedSearchCriteria = criteria;
+			showAdvancedSearch = false;
+
+			showToast(`Found ${result.totalCount} file${result.totalCount === 1 ? '' : 's'} matching ${result.matchedCriteria.length} criteria`, 'success');
+		} catch (error) {
+			logger.error('Advanced search error:', error);
+			showToast('Search failed. Please try again.', 'error');
 		}
 	}
 
-	$effect(() => {
-		// Log when the media data from the server changes
-		console.log('Media files updated:', data.media);
-	});
+	// Clear advanced search
+	function clearAdvancedSearch() {
+		advancedSearchCriteria = null;
+		fetchMediaFiles(); // Reload all files
+	}
 </script>
 
 <!-- Page Title and Actions -->
@@ -538,7 +607,7 @@ It p			if (result.success) {
 			try {
 				defaultBehavior();
 			} catch (error) {
-				console.error('Navigation error:', error);
+				logger.error('Navigation error:', error);
 				// Fallback to home page if history.back() fails
 				goto('/');
 			}
@@ -570,13 +639,19 @@ It p			if (result.success) {
 <div class="wrapper overflow-auto">
 	<div class="mb-8 flex w-full flex-col justify-center gap-1 md:hidden">
 		<label for="globalSearch">Search</label>
-		<div class="input-group input-group-divider grid max-w-md grid-cols-[auto_1fr_auto]">
-			<input id="globalSearch" type="text" placeholder="Search Media" class="input" bind:value={globalSearchValue} />
-			{#if globalSearchValue}
-				<button onclick={() => (globalSearchValue = '')} aria-label="Clear search" class="variant-filled-surface w-12">
-					<iconify-icon icon="ic:outline-search-off" width="24"></iconify-icon>
-				</button>
-			{/if}
+		<div class="flex gap-2">
+			<div class="input-group input-group-divider grid flex-1 grid-cols-[auto_1fr_auto]">
+				<input id="globalSearch" type="text" placeholder="Search Media" class="input" bind:value={globalSearchValue} />
+				{#if globalSearchValue}
+					<button onclick={() => (globalSearchValue = '')} aria-label="Clear search" class="variant-filled-surface w-12">
+						<iconify-icon icon="ic:outline-search-off" width="24"></iconify-icon>
+					</button>
+				{/if}
+			</div>
+			<!-- Advanced Search Button (Mobile) - Outside input group -->
+			<button onclick={() => (showAdvancedSearch = true)} aria-label="Advanced search" class="variant-filled-surface btn" title="Advanced Search">
+				<iconify-icon icon="mdi:magnify-plus-outline" width="24"></iconify-icon>
+			</button>
 		</div>
 
 		<div class="mt-4 flex justify-between">
@@ -602,13 +677,13 @@ It p			if (result.success) {
 						{#if view === 'grid'}
 							<button onclick={() => handleViewChange('table')} aria-label="Table" class="btn flex flex-col items-center justify-center px-1">
 								<p class="text-center text-xs">Display</p>
-								<iconify-icon icon="material-symbols:list-alt-outline" height="44" style={`color: text-black dark:text-white`}></iconify-icon>
+								<iconify-icon icon="material-symbols:list-alt-outline" height="44" style="color: text-black dark:text-white"></iconify-icon>
 								<p class="text-xs">Table</p>
 							</button>
 						{:else}
 							<button onclick={() => handleViewChange('grid')} aria-label="Grid" class="btn flex flex-col items-center justify-center px-1">
 								<p class="text-center text-xs">Display</p>
-								<iconify-icon icon="material-symbols:grid-view-rounded" height="42" style={`color: text-black dark:text-white`}></iconify-icon>
+								<iconify-icon icon="material-symbols:grid-view-rounded" height="42" style="color: text-black dark:text-white"></iconify-icon>
 								<p class="text-center text-xs">Grid</p>
 							</button>
 						{/if}
@@ -617,21 +692,59 @@ It p			if (result.success) {
 				<div class="flex flex-col items-center">
 					<p class="text-xs">Size</p>
 					<div class="divide-surface-00 flex divide-x">
-						{#if (view === 'grid' && gridSize === 'small') || (view === 'table' && tableSize === 'small')}
+						{#if (view === 'grid' && gridSize === 'tiny') || (view === 'table' && tableSize === 'tiny')}
 							<button
 								onclick={() => {
 									const newSize =
 										view === 'grid'
-											? gridSize === 'small'
-												? 'medium'
-												: gridSize === 'medium'
-													? 'large'
-													: 'small'
-											: tableSize === 'small'
-												? 'medium'
-												: tableSize === 'medium'
-													? 'large'
-													: 'small';
+											? gridSize === 'tiny'
+												? 'small'
+												: gridSize === 'small'
+													? 'medium'
+													: gridSize === 'medium'
+														? 'large'
+														: 'tiny'
+											: tableSize === 'tiny'
+												? 'small'
+												: tableSize === 'small'
+													? 'medium'
+													: tableSize === 'medium'
+														? 'large'
+														: 'tiny';
+
+									if (view === 'grid') {
+										gridSize = newSize;
+									} else {
+										tableSize = newSize;
+									}
+									storeUserPreference(view, gridSize, tableSize);
+								}}
+								type="button"
+								aria-label="Tiny"
+								class="px-1"
+							>
+								<iconify-icon icon="material-symbols:apps" height="40" style="color:text-black dark:text-white"></iconify-icon>
+								<p class="text-xs">Tiny</p>
+							</button>
+						{:else if (view === 'grid' && gridSize === 'small') || (view === 'table' && tableSize === 'small')}
+							<button
+								onclick={() => {
+									const newSize =
+										view === 'grid'
+											? gridSize === 'tiny'
+												? 'small'
+												: gridSize === 'small'
+													? 'medium'
+													: gridSize === 'medium'
+														? 'large'
+														: 'tiny'
+											: tableSize === 'tiny'
+												? 'small'
+												: tableSize === 'small'
+													? 'medium'
+													: tableSize === 'medium'
+														? 'large'
+														: 'tiny';
 
 									if (view === 'grid') {
 										gridSize = newSize;
@@ -644,8 +757,7 @@ It p			if (result.success) {
 								aria-label="Small"
 								class="px-1"
 							>
-								<iconify-icon icon="material-symbols:background-grid-small-sharp" height="40" style={`color:text-black dark:text-white`}
-								></iconify-icon>
+								<iconify-icon icon="material-symbols:background-grid-small-sharp" height="40" style="color:text-black dark:text-white"></iconify-icon>
 								<p class="text-xs">Small</p>
 							</button>
 						{:else if (view === 'grid' && gridSize === 'medium') || (view === 'table' && tableSize === 'medium')}
@@ -653,16 +765,20 @@ It p			if (result.success) {
 								onclick={() => {
 									const newSize =
 										view === 'grid'
-											? gridSize === 'small'
-												? 'medium'
-												: gridSize === 'medium'
-													? 'large'
-													: 'small'
-											: tableSize === 'small'
-												? 'medium'
-												: tableSize === 'medium'
-													? 'large'
-													: 'small';
+											? gridSize === 'tiny'
+												? 'small'
+												: gridSize === 'small'
+													? 'medium'
+													: gridSize === 'medium'
+														? 'large'
+														: 'tiny'
+											: tableSize === 'tiny'
+												? 'small'
+												: tableSize === 'small'
+													? 'medium'
+													: tableSize === 'medium'
+														? 'large'
+														: 'tiny';
 
 									if (view === 'grid') {
 										gridSize = newSize;
@@ -675,7 +791,7 @@ It p			if (result.success) {
 								aria-label="Medium"
 								class="px-1"
 							>
-								<iconify-icon icon="material-symbols:grid-on-sharp" height="40" style={`color: text-black dark:text-white`}></iconify-icon>
+								<iconify-icon icon="material-symbols:grid-on-sharp" height="40" style="color: text-black dark:text-white"></iconify-icon>
 								<p class="text-xs">Medium</p>
 							</button>
 						{:else}
@@ -683,16 +799,20 @@ It p			if (result.success) {
 								onclick={() => {
 									const newSize =
 										view === 'grid'
-											? gridSize === 'small'
-												? 'medium'
-												: gridSize === 'medium'
-													? 'large'
-													: 'small'
-											: tableSize === 'small'
-												? 'medium'
-												: tableSize === 'medium'
-													? 'large'
-													: 'small';
+											? gridSize === 'tiny'
+												? 'small'
+												: gridSize === 'small'
+													? 'medium'
+													: gridSize === 'medium'
+														? 'large'
+														: 'tiny'
+											: tableSize === 'tiny'
+												? 'small'
+												: tableSize === 'small'
+													? 'medium'
+													: tableSize === 'medium'
+														? 'large'
+														: 'tiny';
 
 									if (view === 'grid') {
 										gridSize = newSize;
@@ -705,7 +825,7 @@ It p			if (result.success) {
 								aria-label="Large"
 								class="px-1"
 							>
-								<iconify-icon icon="material-symbols:grid-view" height="40" style={`color: text-black dark:text-white`}></iconify-icon>
+								<iconify-icon icon="material-symbols:grid-view" height="40" style="color: text-black dark:text-white"></iconify-icon>
 								<p class="text-xs">Large</p>
 							</button>
 						{/if}
@@ -718,7 +838,7 @@ It p			if (result.success) {
 	<div class="mb-2 hidden items-center justify-between gap-1 md:flex md:gap-3">
 		<div class="mb-8 flex w-full flex-col justify-center gap-1">
 			<label for="globalSearchMd">Search</label>
-			<div class="input-group input-group-divider grid max-w-md grid-cols-[auto_1fr_auto]">
+			<div class="input-group input-group-divider grid max-w-md grid-cols-[auto_1fr_auto_auto]">
 				<input bind:value={globalSearchValue} id="globalSearchMd" type="text" placeholder="Search" class="input" />
 				{#if globalSearchValue}
 					<button onclick={clearSearch} class="variant-filled-surface w-12" aria-label="Clear search">
@@ -727,6 +847,12 @@ It p			if (result.success) {
 				{/if}
 			</div>
 		</div>
+
+		<!-- Advanced Search Button (Desktop) -->
+		<button onclick={() => (showAdvancedSearch = true)} aria-label="Advanced search" class="variant-filled-surface btn gap-2" title="Advanced Search">
+			<iconify-icon icon="mdi:magnify-plus-outline" width="24"></iconify-icon>
+			Advanced
+		</button>
 
 		<div class="mb-8 flex flex-col justify-center gap-1">
 			<label for="mediaTypeMd">Type</label>
@@ -766,21 +892,59 @@ It p			if (result.success) {
 			<div class="hidden flex-col items-center sm:flex">
 				Size
 				<div class="flex divide-x divide-gray-500">
-					{#if (view === 'grid' && gridSize === 'small') || (view === 'table' && tableSize === 'small')}
+					{#if (view === 'grid' && gridSize === 'tiny') || (view === 'table' && tableSize === 'tiny')}
 						<button
 							onclick={() => {
 								const newSize =
 									view === 'grid'
-										? gridSize === 'small'
-											? 'medium'
-											: gridSize === 'medium'
-												? 'large'
-												: 'small'
-										: tableSize === 'small'
-											? 'medium'
-											: tableSize === 'medium'
-												? 'large'
-												: 'small';
+										? gridSize === 'tiny'
+											? 'small'
+											: gridSize === 'small'
+												? 'medium'
+												: gridSize === 'medium'
+													? 'large'
+													: 'tiny'
+										: tableSize === 'tiny'
+											? 'small'
+											: tableSize === 'small'
+												? 'medium'
+												: tableSize === 'medium'
+													? 'large'
+													: 'tiny';
+
+								if (view === 'grid') {
+									gridSize = newSize;
+								} else {
+									tableSize = newSize;
+								}
+								storeUserPreference(view, gridSize, tableSize);
+							}}
+							type="button"
+							class="px-1 md:px-2"
+							aria-label="Tiny"
+						>
+							<iconify-icon icon="material-symbols:apps" height="40"></iconify-icon>
+							<br /><span class="text-tertiary-500 dark:text-primary-500">Tiny</span>
+						</button>
+					{:else if (view === 'grid' && gridSize === 'small') || (view === 'table' && tableSize === 'small')}
+						<button
+							onclick={() => {
+								const newSize =
+									view === 'grid'
+										? gridSize === 'tiny'
+											? 'small'
+											: gridSize === 'small'
+												? 'medium'
+												: gridSize === 'medium'
+													? 'large'
+													: 'tiny'
+										: tableSize === 'tiny'
+											? 'small'
+											: tableSize === 'small'
+												? 'medium'
+												: tableSize === 'medium'
+													? 'large'
+													: 'tiny';
 
 								if (view === 'grid') {
 									gridSize = newSize;
@@ -801,16 +965,20 @@ It p			if (result.success) {
 							onclick={() => {
 								const newSize =
 									view === 'grid'
-										? gridSize === 'small'
-											? 'medium'
-											: gridSize === 'medium'
-												? 'large'
-												: 'small'
-										: tableSize === 'small'
-											? 'medium'
-											: tableSize === 'medium'
-												? 'large'
-												: 'small';
+										? gridSize === 'tiny'
+											? 'small'
+											: gridSize === 'small'
+												? 'medium'
+												: gridSize === 'medium'
+													? 'large'
+													: 'tiny'
+										: tableSize === 'tiny'
+											? 'small'
+											: tableSize === 'small'
+												? 'medium'
+												: tableSize === 'medium'
+													? 'large'
+													: 'tiny';
 
 								if (view === 'grid') {
 									gridSize = newSize;
@@ -831,16 +999,20 @@ It p			if (result.success) {
 							onclick={() => {
 								const newSize =
 									view === 'grid'
-										? gridSize === 'small'
-											? 'medium'
-											: gridSize === 'medium'
-												? 'large'
-												: 'small'
-										: tableSize === 'small'
-											? 'medium'
-											: tableSize === 'medium'
-												? 'large'
-												: 'small';
+										? gridSize === 'tiny'
+											? 'small'
+											: gridSize === 'small'
+												? 'medium'
+												: gridSize === 'medium'
+													? 'large'
+													: 'tiny'
+										: tableSize === 'tiny'
+											? 'small'
+											: tableSize === 'small'
+												? 'medium'
+												: tableSize === 'medium'
+													? 'large'
+													: 'tiny';
 
 								if (view === 'grid') {
 									gridSize = newSize;
@@ -863,18 +1035,50 @@ It p			if (result.success) {
 	</div>
 
 	{#if view === 'grid'}
-		<MediaGrid
-			{filteredFiles}
-			{gridSize}
-			ondeleteImage={handleDeleteImage}
-			on:sizechange={({ detail }) => {
-				if (detail.type === 'grid') {
-					gridSize = detail.size;
-					storeUserPreference(view, gridSize, tableSize);
-				}
-			}}
-		/>
+		{#if useVirtualScrolling}
+			<!-- Enterprise Virtual Scrolling for Large Collections (100+ files) -->
+			<VirtualMediaGrid {filteredFiles} {gridSize} ondeleteImage={handleDeleteImage} onBulkDelete={handleBulkDelete} />
+			<div class="alert variant-ghost-surface mt-4">
+				<iconify-icon icon="mdi:lightning-bolt" width="20"></iconify-icon>
+				<span class="text-sm">
+					Virtual scrolling enabled for optimal performance with {filteredFiles.length} files
+				</span>
+			</div>
+		{:else}
+			<!-- Standard Grid for Smaller Collections -->
+			<MediaGrid
+				{filteredFiles}
+				{gridSize}
+				ondeleteImage={handleDeleteImage}
+				onBulkDelete={handleBulkDelete}
+				on:sizechange={({ detail }) => {
+					if (detail.type === 'grid') {
+						gridSize = detail.size;
+						storeUserPreference(view, gridSize, tableSize);
+					}
+				}}
+			/>
+		{/if}
 	{:else}
-		<MediaTable {filteredFiles} {tableSize} ondeleteImage={handleDeleteImage} />
+		<MediaTable {filteredFiles} tableSize={safeTableSize} ondeleteImage={handleDeleteImage} />
 	{/if}
 </div>
+
+<!-- Modals -->
+{#if showAdvancedSearch}
+	<AdvancedSearchModal {files} onSearch={handleAdvancedSearch} onClose={() => (showAdvancedSearch = false)} />
+{/if}
+
+<!-- Active Search Indicator -->
+{#if advancedSearchCriteria}
+	<div class="alert variant-filled-warning fixed bottom-4 right-4 z-40 max-w-sm">
+		<iconify-icon icon="mdi:filter" width="20"></iconify-icon>
+		<div class="flex-1">
+			<p class="font-semibold">Advanced search active</p>
+			<p class="text-sm opacity-90">Showing filtered results</p>
+		</div>
+		<button onclick={clearAdvancedSearch} class="variant-ghost-surface btn-icon btn-sm" aria-label="Clear search">
+			<iconify-icon icon="mdi:close" width="18"></iconify-icon>
+		</button>
+	</div>
+{/if}

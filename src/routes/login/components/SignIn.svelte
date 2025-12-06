@@ -4,25 +4,28 @@
 **SignIn component with OAuth support**
 
 Features:
- - Dual SignIn and SignUp functionality with dynamic form switching
- - Dynamic language selection with a debounced input field or dropdown for multiple languages
+ - User authentication with password or OAuth
+ - Dynamic language selection with debounced input field or dropdown for multiple languages
  - Demo mode support with auto-reset timer displayed when active
- - Initial form display adapts based on environment variables (`SEASON`, `DEMO`, and `firstUserExists`)
- - Reset state functionality for easy return to initial screen
+ - Initial form display adapts based on environment variables (`SEASON`, `DEMO`)
+ - Password reset functionality
+ - Two-factor authentication (2FA) support
  - Accessibility features for language selection and form navigation
+
+Note: First-user registration is now handled by /setup route (enforced by handleSetup hook)
 -->
 
 <script lang="ts">
 	import { browser } from '$app/environment';
+	import { goto, preloadData } from '$app/navigation';
+	import { enhance } from '$app/forms';
 
 	// Stores
 	import { page } from '$app/state';
 	import type { PageData } from '../$types';
 
-	// Superforms
-	import { superForm } from 'sveltekit-superforms/client';
-	import type { SuperValidated } from 'sveltekit-superforms';
-	import type { LoginFormSchema, ForgotFormSchema, ResetFormSchema } from '@utils/formSchemas';
+	import { Form } from '@utils/Form.svelte';
+	import { loginFormSchema, forgotFormSchema, resetFormSchema } from '@utils/formSchemas';
 
 	// Components
 	import SiteName from '@components/SiteName.svelte';
@@ -32,45 +35,41 @@ Features:
 	import SveltyCMSLogoFull from '@components/system/icons/SveltyCMS_LogoFull.svelte';
 	import PasswordStrength from '@components/PasswordStrength.svelte';
 	// Lazy-load FloatingPaths on desktop for performance
-	let FloatingPathsComponent = $state<any>(null);
+	let FloatingPathsComponent: Component | null = $state(null);
 
 	// Skeleton
-	import { getToastStore } from '@skeletonlabs/skeleton';
-	const toastStore = getToastStore();
+	import { showToast } from '@utils/toast';
+	import type { Component } from 'svelte';
 
 	// ParaglideJS
 	import * as m from '@src/paraglide/messages';
 	import OauthLogin from './OauthLogin.svelte';
 
 	// Screen size store
-	import { isDesktop, isTablet, isMobile, screenSize, screenWidth } from '@stores/screenSizeStore.svelte';
+	import { isDesktop } from '@stores/screenSizeStore.svelte';
 	import { globalLoadingStore, loadingOperations } from '@stores/loadingStore.svelte';
 
 	// Props
 	const {
 		active = $bindable(undefined),
-		FormSchemaLogin,
-		FormSchemaForgot,
-		FormSchemaReset,
 		onClick = () => {},
-		onPointerEnter = () => {},
-		onBack = () => {}
-	} = $props<{
-		active?: undefined | 0 | 1;
-		FormSchemaLogin: SuperValidated<LoginFormSchema>;
-		FormSchemaForgot: SuperValidated<ForgotFormSchema>;
-		FormSchemaReset: SuperValidated<ResetFormSchema>;
+		onPointerEnter: onPointerEnterProp = () => {},
+		onBack = () => {},
+		firstCollectionPath = ''
+	}: {
+		active?: number;
 		onClick?: () => void;
-		onPointerEnter?: () => void;
+		onPointerEnter?: (e: PointerEvent) => void;
 		onBack?: () => void;
-	}>();
+		firstCollectionPath?: string;
+	} = $props();
 
 	// State management
 	let PWforgot = $state(false);
 	let PWreset = $state(false);
-	let showPassword = $state(false);
-	let formElement = $state<HTMLFormElement | null>(null);
-	let tabIndex = $state(1);
+	const showPassword = $state(false);
+	let formElement: HTMLFormElement | null = $state(null);
+	const tabIndex = $state(1);
 
 	// Pre-calculate tab indices
 	const emailTabIndex = 1;
@@ -78,7 +77,6 @@ Features:
 	const confirmPasswordTabIndex = 3;
 	const forgotPasswordTabIndex = 4;
 	const pageData = page.data as PageData;
-	const firstUserExists = pageData.firstUserExists;
 
 	// URL handling
 	const current_url = $state(browser ? window.location.href : '');
@@ -95,26 +93,17 @@ Features:
 	let isVerifying2FA = $state(false);
 
 	// Login form setup
-	const { form, constraints, allErrors, errors, enhance } = superForm(FormSchemaLogin, {
-		id: 'login',
-		// Clear form on success.
-		resetForm: true,
-		// Prevent page invalidation, which would clear the other form when the load function executes again.
-		invalidateAll: false,
-		// other options
-		applyAction: true,
-		taintedMessage: '',
-		multipleSubmits: 'prevent',
-
+	// Login form setup
+	const loginForm = new Form({ email: '', password: '', isToken: false }, loginFormSchema);
+	const loginSubmit = loginForm.enhance({
 		onSubmit: ({ cancel }) => {
-			if (typeof $form.email === 'string') {
-				$form.email = $form.email.toLowerCase(); // Submit email as lowercase only
+			if (loginForm.data.email) {
+				loginForm.data.email = loginForm.data.email.toLowerCase();
 			}
 
 			// handle login form submission
-			if ($allErrors.length > 0) {
+			if (Object.keys(loginForm.errors).length > 0) {
 				cancel();
-
 				formElement?.classList.add('wiggle');
 				setTimeout(() => formElement?.classList.remove('wiggle'), 300);
 				return;
@@ -126,7 +115,7 @@ Features:
 			globalLoadingStore.startLoading(loadingOperations.authentication);
 		},
 
-		onResult: ({ result, cancel }) => {
+		onResult: async ({ result, update }) => {
 			// Reset submitting state
 			isSubmitting = false;
 
@@ -135,20 +124,22 @@ Features:
 				isAuthenticating = true;
 
 				// Trigger the toast
-				toastStore.trigger({
-					message: m.signin_signinsuccess(),
-					// Provide any utility or variant background style:
-					background: 'variant-filled-primary',
-					timeout: 1500, // Reduced timeout for faster UX
-					// Add your custom classes here:
-					classes: 'border-1 !rounded-md'
-				});
+				showToast(m.signin_signinsuccess(), 'success');
 
-				// Clear authenticating state immediately for faster navigation
-				setTimeout(() => {
-					isAuthenticating = false;
-					globalLoadingStore.stopLoading(loadingOperations.authentication);
-				}, 100);
+				// Cancel default redirect behavior so we can use client-side navigation
+				// cancel(); // Form class doesn't support cancelling redirect in onResult easily without preventing update?
+				// Actually, if we don't call update(), the redirect doesn't happen automatically?
+				// SvelteKit default applyAction handles redirect.
+				// We want to use goto.
+
+				// Use client-side navigation for instant redirect
+				if (result.location) {
+					goto(result.location);
+				}
+
+				// Clear authenticating state immediately
+				isAuthenticating = false;
+				globalLoadingStore.stopLoading(loadingOperations.authentication);
 
 				return;
 			}
@@ -161,210 +152,132 @@ Features:
 				globalLoadingStore.stopLoading(loadingOperations.authentication);
 
 				// Show 2FA required message
-				toastStore.trigger({
-					message: m.twofa_verify_title(),
-					background: 'variant-filled-warning',
-					timeout: 3000,
-					classes: 'border-1 !rounded-md'
-				});
-
-				cancel();
+				showToast(m.twofa_verify_title(), 'warning');
 				return;
 			}
 
 			// Reset all states on error
 			isAuthenticating = false;
 			globalLoadingStore.stopLoading(loadingOperations.authentication);
-			cancel();
 
-			// Trigger the toast
-			toastStore.trigger({
-				message: m.signin_wrong_user_or_password(),
-				// Provide any utility or variant background style:
-				background: 'variant-filled-error',
-				timeout: 4000,
-				// Add your custom classes here:
-				classes: 'border-1 !rounded-md'
-			});
+			if (result.type === 'failure' || result.type === 'error') {
+				// Trigger the toast
+				showToast(m.signin_wrong_user_or_password(), 'error');
 
-			// add wiggle animation to form element
-			formElement?.classList.add('wiggle');
-			setTimeout(() => {
-				formElement?.classList.remove('wiggle');
-			}, 300);
+				// add wiggle animation to form element
+				formElement?.classList.add('wiggle');
+				setTimeout(() => {
+					formElement?.classList.remove('wiggle');
+				}, 300);
+			}
+
+			await update();
 		}
 	});
 
 	// Forgot Form setup
-	const {
-		form: forgotForm,
-		constraints: forgotConstraints,
-		allErrors: forgotAllErrors,
-		errors: forgotErrors,
-		enhance: forgotEnhance
-	} = superForm(FormSchemaForgot, {
-		id: 'forgot',
-		resetForm: true,
-		invalidateAll: false,
-		applyAction: true,
-		taintedMessage: '',
-		multipleSubmits: 'prevent',
-
+	// Forgot Form setup
+	const forgotForm = new Form({ email: '' }, forgotFormSchema);
+	const forgotSubmit = forgotForm.enhance({
 		onSubmit: ({ cancel }) => {
-			if (typeof $forgotForm.email === 'string') {
-				$forgotForm.email = $forgotForm.email.toLowerCase();
+			if (forgotForm.data.email) {
+				forgotForm.data.email = forgotForm.data.email.toLowerCase();
 			}
 
-			// handle login form submission
-			if ($forgotAllErrors.length > 0) {
+			if (Object.keys(forgotForm.errors).length > 0) {
 				cancel();
-
 				formElement?.classList.add('wiggle');
 				setTimeout(() => formElement?.classList.remove('wiggle'), 300);
 				return;
 			}
 
-			// Set submitting state
 			isSubmitting = true;
 		},
 
-		onResult: ({ result, cancel }) => {
-			// Reset submitting state
+		onResult: async ({ result, update }) => {
 			isSubmitting = false;
 
-			// handle forgot form result
 			if (result.type === 'error') {
 				// Transform the array of error messages into a single string
-				let errorMessages = '';
-				forgotAllErrors.subscribe((errors) => {
-					errorMessages = errors.map((error) => error.messages.join(', ')).join('; ');
-				});
+				// Form class puts errors in forgotForm.errors
+				// But result.type 'error' is usually 500 or network error
+				// If it's 400 with errors, it's 'failure'
 
-				// Trigger the toast
-				toastStore.trigger({
-					message: errorMessages,
-					// Provide any utility or variant background style:
-					background: 'variant-filled-primary',
-					timeout: 4000,
-					// Add your custom classes here:
-					classes: 'border-1 !rounded-md'
-				});
-
+				// For now, just show generic error or message from result
+				showToast(result.error?.message || 'An error occurred', 'info');
 				return;
 			}
 
-			if (result.type === 'success') {
+			if (result.type === 'success' || result.type === 'failure') {
+				// Failure can also contain data
 				// Check if user exists
 				if (result.data && result.data.userExists === false) {
-					// User doesn't exist - show error toast and don't navigate to reset form
 					PWreset = false;
-					toastStore.trigger({
-						message: 'No account found with this email address.',
-						background: 'variant-filled-error',
-						timeout: 4000,
-						classes: 'border-1 !rounded-md'
-					});
-
-					// Add wiggle animation to form element
+					showToast('No account found with this email address.', 'error');
 					formElement?.classList.add('wiggle');
-					setTimeout(() => {
-						formElement?.classList.remove('wiggle');
-					}, 300);
+					setTimeout(() => formElement?.classList.remove('wiggle'), 300);
 					return;
 				} else if (result.data && result.data.userExists === true) {
-					// User exists and email should have been sent
 					PWreset = true;
-					toastStore.trigger({
-						message: m.signin_forgottontoast(),
-						background: 'variant-filled-primary',
-						timeout: 4000,
-						classes: 'border-1 !rounded-md'
-					});
+					showToast(m.signin_forgottontoast(), 'success');
 					return;
 				} else {
-					// Legacy fallback or other success scenarios
-					if (result.data !== undefined && result.data.status === false) {
+					// Fallback
+					if (result.data?.status === false) {
 						PWreset = false;
 						formElement?.classList.add('wiggle');
-						setTimeout(() => {
-							formElement?.classList.remove('wiggle');
-						}, 300);
-						return;
+						setTimeout(() => formElement?.classList.remove('wiggle'), 300);
 					} else {
 						PWreset = true;
-						toastStore.trigger({
-							message: m.signin_forgottontoast(),
-							background: 'variant-filled-primary',
-							timeout: 4000,
-							classes: 'border-1 !rounded-md'
-						});
-						return;
+						showToast(m.signin_forgottontoast(), 'success');
 					}
 				}
 			}
 
-			cancel();
+			await update();
 
-			// add wiggle animation to form element
-			formElement?.classList.add('wiggle');
-			setTimeout(() => {
-				formElement?.classList.remove('wiggle');
-			}, 300);
+			if (result.type === 'failure') {
+				formElement?.classList.add('wiggle');
+				setTimeout(() => {
+					formElement?.classList.remove('wiggle');
+				}, 300);
+			}
 		}
 	});
 
 	// Reset Form setup
-	const {
-		form: resetForm,
-		constraints: resetConstraints,
-		allErrors: resetAllErrors,
-		errors: resetErrors,
-		enhance: resetEnhance
-	} = superForm(FormSchemaReset, {
-		id: 'reset',
-		resetForm: true,
-		invalidateAll: false,
-		applyAction: true,
-		taintedMessage: '',
-		multipleSubmits: 'prevent',
-
+	// Reset Form setup
+	const resetForm = new Form({ password: '', confirm_password: '', token: '', email: '' }, resetFormSchema);
+	const resetSubmit = resetForm.enhance({
 		onSubmit: ({ cancel }) => {
-			if ($resetAllErrors.length > 0) {
+			if (Object.keys(resetForm.errors).length > 0) {
 				cancel();
 				return;
 			}
-
-			// Set submitting state
 			isSubmitting = true;
 		},
 
-		onResult: ({ result, cancel }) => {
-			// Reset submitting state
+		onResult: async ({ result, update }) => {
 			isSubmitting = false;
-
-			// update variables to display login page
 			PWreset = false;
 			PWforgot = false;
 
 			if (result.type === 'success' || result.type === 'redirect') {
-				// Trigger the Reset toast
-				toastStore.trigger({
-					message: m.signin_restpasswordtoast(),
-					// Provide any utility or variant background style:
-					background: 'variant-filled-primary',
-					timeout: result.type === 'redirect' ? 3000 : 4000,
-					// Add your custom classes here:
-					classes: 'border-1 !rounded-md'
-				});
-
-				if (result.type === 'redirect') return;
+				showToast(m.signin_restpasswordtoast(), 'success');
+				if (result.type === 'redirect') {
+					if (result.location) goto(result.location);
+					return;
+				}
 			}
 
-			cancel();
-			formElement?.classList.add('wiggle');
-			setTimeout(() => {
-				formElement?.classList.remove('wiggle');
-			}, 300);
+			await update();
+
+			if (result.type === 'failure') {
+				formElement?.classList.add('wiggle');
+				setTimeout(() => {
+					formElement?.classList.remove('wiggle');
+				}, 300);
+			}
 		}
 	});
 
@@ -373,22 +286,12 @@ Features:
 		if (!twoFACode.trim() || isVerifying2FA) return;
 
 		if (!useBackupCode && twoFACode.length !== 6) {
-			toastStore.trigger({
-				message: m.twofa_error_invalid_code(),
-				background: 'variant-filled-error',
-				timeout: 3000,
-				classes: 'border-1 !rounded-md'
-			});
+			showToast(m.twofa_error_invalid_code(), 'error');
 			return;
 		}
 
 		if (useBackupCode && twoFACode.length < 8) {
-			toastStore.trigger({
-				message: 'Invalid backup code format',
-				background: 'variant-filled-error',
-				timeout: 3000,
-				classes: 'border-1 !rounded-md'
-			});
+			showToast('Invalid backup code format', 'error');
 			return;
 		}
 
@@ -407,12 +310,7 @@ Features:
 			// Parse response
 			if (response.ok) {
 				// Success - redirect will be handled by SvelteKit
-				toastStore.trigger({
-					message: m.twofa_success_verified(),
-					background: 'variant-filled-success',
-					timeout: 2000,
-					classes: 'border-1 !rounded-md'
-				});
+				showToast(m.twofa_success_verified(), 'success');
 
 				// The server will redirect on successful verification
 				window.location.reload();
@@ -421,12 +319,7 @@ Features:
 				throw new Error(errorData.message || m.twofa_error_invalid_code());
 			}
 		} catch (error) {
-			toastStore.trigger({
-				message: error instanceof Error ? error.message : m.twofa_error_invalid_code(),
-				background: 'variant-filled-error',
-				timeout: 4000,
-				classes: 'border-1 !rounded-md'
-			});
+			showToast(error instanceof Error ? error.message : m.twofa_error_invalid_code(), 'error');
 		} finally {
 			isVerifying2FA = false;
 		}
@@ -471,8 +364,8 @@ Features:
 			const emailParam = urlObj.searchParams.get('email') || '';
 			if (tokenParam && emailParam) {
 				// Directly update the reset form with token and email values
-				$resetForm.token = tokenParam;
-				$resetForm.email = emailParam;
+				resetForm.data.token = tokenParam;
+				resetForm.data.email = emailParam;
 
 				// Set flags for reset flow
 				PWforgot = true;
@@ -519,10 +412,17 @@ Features:
 		const isActiveLogin = active === 0;
 		if (browser && desktop && isActiveLogin) {
 			import('@root/src/components/system/FloatingPaths.svelte').then((m) => {
-				FloatingPathsComponent = m.default;
+				FloatingPathsComponent = m.default as Component;
 			});
 		} else {
 			FloatingPathsComponent = null;
+		}
+	});
+
+	// Prefetch first collection data when active
+	$effect(() => {
+		if (active === 0 && firstCollectionPath) {
+			preloadData(firstCollectionPath);
 		}
 	});
 </script>
@@ -530,7 +430,7 @@ Features:
 <section
 	onclick={handleFormClick}
 	onkeydown={(e) => e.key === 'Enter' && onClick?.()}
-	onpointerenter={onPointerEnter}
+	onpointerenter={onPointerEnterProp}
 	role="button"
 	tabindex={tabIndex}
 	class={baseClasses}
@@ -557,7 +457,7 @@ Features:
 					<SveltyCMSLogo className="w-14" fill="red" />
 
 					<h1 class="text-3xl font-bold text-black lg:text-4xl">
-						<div class="text-xs text-surface-300"><SiteName /></div>
+						<div class="text-xs text-surface-300"><SiteName highlight="CMS" /></div>
 						{#if !PWforgot && !PWreset}
 							<div class="lg:-mt-1">{m.form_signin()}</div>
 						{:else if PWforgot && !PWreset}
@@ -573,349 +473,346 @@ Features:
 					{m.form_required()}
 
 					<button onclick={handleBack} aria-label="Back" class="variant-outline-secondary btn-icon">
-						<iconify-icon icon="ri:arrow-right-line" width="20" class="text-black"></iconify-icon>
+						<iconify-icon icon="ri:arrow-right-line" width="20" class=""></iconify-icon>
 					</button>
 				</div>
 
-				{#if firstUserExists}
-					<!-- Sign In -->
-					{#if !PWforgot && !PWreset}
-						<form
-							id="signin-form"
-							method="POST"
-							action="?/signIn"
-							use:enhance
-							bind:this={formElement}
-							class="flex w-full flex-col gap-3"
-							class:hide={active !== 0}
-							inert={active !== 0}
-						>
-							<!-- Email field -->
-							<FloatingInput
-								id="emailsignIn"
-								name="email"
-								type="email"
-								tabindex={emailTabIndex}
-								autocomplete="username"
-								autocapitalize="none"
-								spellcheck={false}
-								bind:value={$form.email}
-								label={m.form_emailaddress()}
-								{...$constraints.email}
-								icon="mdi:email"
-								iconColor="black"
-								textColor="black"
-							/>
-							{#if $errors.email}<span class="invalid text-xs text-error-500">{$errors.email}</span>{/if}
+				<!-- Sign In (first-user signup now handled by /setup) -->
+				{#if !PWforgot && !PWreset}
+					<form
+						id="signin-form"
+						method="POST"
+						action="?/signIn"
+						use:enhance={loginSubmit}
+						bind:this={formElement}
+						class="flex w-full flex-col gap-3"
+						class:hide={active !== 0}
+						inert={active !== 0}
+					>
+						<!-- Email field -->
+						<FloatingInput
+							id="emailsignIn"
+							name="email"
+							type="email"
+							tabindex={emailTabIndex}
+							autocomplete="username"
+							autocapitalize="none"
+							spellcheck={false}
+							bind:value={loginForm.data.email}
+							label={m.email()}
+							required
+							icon="mdi:email"
+							iconColor="black"
+							textColor="black"
+						/>
+						{#if loginForm.errors.email}<span class="invalid text-xs text-error-500">{loginForm.errors.email[0]}</span>{/if}
 
-							<!-- Password field -->
-							<FloatingInput
-								id="passwordsignIn"
-								name="password"
-								type="password"
-								autocomplete="current-password"
-								tabindex={passwordTabIndex}
-								bind:value={$form.password}
-								{...$constraints.password}
-								{showPassword}
-								label={m.form_password()}
-								icon="mdi:lock"
-								iconColor="black"
-								textColor="black"
-							/>
-							{#if $errors.password}<span class="invalid text-xs text-error-500">{$errors.password}</span>{/if}
-						</form>
+						<!-- Password field -->
+						<FloatingInput
+							id="passwordsignIn"
+							name="password"
+							type="password"
+							autocomplete="current-password"
+							tabindex={passwordTabIndex}
+							bind:value={loginForm.data.password}
+							required
+							{showPassword}
+							label={m.form_password()}
+							icon="mdi:lock"
+							iconColor="black"
+							textColor="black"
+						/>
+						{#if loginForm.errors.password}<span class="invalid text-xs text-error-500">{loginForm.errors.password[0]}</span>{/if}
+					</form>
 
-						<div class="mt-4 flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
-							<!-- Row 1 -->
-							<div class="flex w-full justify-between gap-2 sm:w-auto">
-								<button type="submit" form="signin-form" class="variant-filled-surface btn w-full sm:w-auto" aria-label={m.form_signin()}>
-									{m.form_signin()}
-									<!-- Optimized loading indicators -->
-									{#if isSubmitting || isAuthenticating}
-										<img src="/Spinner.svg" alt="" aria-hidden="true" decoding="async" class="ml-4 h-6 invert filter" />
-									{/if}
-								</button>
-								<!-- OAuth Login -->
-								<OauthLogin showOAuth={pageData.showOAuth} />
-							</div>
-
-							<!-- Row 2 -->
-							<div class="mt-4 flex w-full justify-between sm:mt-0 sm:w-auto">
-								<button
-									type="button"
-									class="variant-ringed-surface btn w-full text-black sm:w-auto"
-									aria-label={m.signin_forgottenpassword()}
-									tabindex={forgotPasswordTabIndex}
-									onclick={handleForgotPassword}
-								>
-									{m.signin_forgottenpassword()}
-								</button>
-							</div>
+					<div class="mt-4 flex flex-col items-center gap-2 sm:flex-row sm:justify-between">
+						<!-- Row 1 -->
+						<div class="flex w-full justify-between gap-2 sm:w-auto">
+							<button type="submit" form="signin-form" class="variant-filled-surface btn w-full sm:w-auto" aria-label={m.form_signin()}>
+								{m.form_signin()}
+								<!-- Optimized loading indicators -->
+								{#if isSubmitting || isAuthenticating}
+									<img src="/Spinner.svg" alt="" aria-hidden="true" decoding="async" class="ml-4 h-6 invert filter" />
+								{/if}
+							</button>
+							<!-- OAuth Login -->
+							<OauthLogin showOAuth={pageData.showOAuth} />
 						</div>
-					{/if}
 
-					<!-- Two-Factor Authentication -->
-					{#if requires2FA && !PWforgot && !PWreset}
-						<div class="flex w-full flex-col gap-4">
-							<!-- 2FA Header -->
-							<div class="text-center">
-								<div class="mb-3">
-									<iconify-icon icon="mdi:shield-key" width="48" class="mx-auto text-primary-500"></iconify-icon>
-								</div>
-								<h3 class="h3 mb-2">{m.twofa_verify_title()}</h3>
-								<p class="text-sm text-surface-600 dark:text-surface-300">
-									{useBackupCode ? 'Enter your backup recovery code:' : m.twofa_verify_description()}
-								</p>
+						<!-- Row 2 -->
+						<div class="mt-4 flex w-full justify-between sm:mt-0 sm:w-auto">
+							<button
+								type="button"
+								class="variant-ringed-surface btn w-full text-black sm:w-auto"
+								aria-label={m.signin_forgottenpassword()}
+								tabindex={forgotPasswordTabIndex}
+								onclick={handleForgotPassword}
+							>
+								{m.signin_forgottenpassword()}
+							</button>
+						</div>
+					</div>
+				{/if}
+
+				<!-- Two-Factor Authentication -->
+				{#if requires2FA && !PWforgot && !PWreset}
+					<div class="flex w-full flex-col gap-4">
+						<!-- 2FA Header -->
+						<div class="text-center">
+							<div class="mb-3">
+								<iconify-icon icon="mdi:shield-key" width="48" class="mx-auto text-primary-500"></iconify-icon>
 							</div>
+							<h3 class="h3 mb-2">{m.twofa_verify_title()}</h3>
+							<p class="text-sm text-surface-600 dark:text-surface-300">
+								{useBackupCode ? 'Enter your backup recovery code:' : m.twofa_verify_description()}
+							</p>
+						</div>
 
-							<!-- Code Input -->
-							<div class="flex flex-col gap-3">
-								<div class="relative">
-									<input
-										type="text"
-										bind:value={twoFACode}
-										oninput={handle2FAInput}
-										onkeydown={(e) => e.key === 'Enter' && verify2FA()}
-										placeholder={useBackupCode ? 'Enter backup code' : m.twofa_code_placeholder()}
-										class="input text-center font-mono tracking-wider"
-										class:text-2xl={!useBackupCode}
-										class:text-lg={useBackupCode}
-										maxlength={useBackupCode ? '10' : '6'}
-										autocomplete="off"
-									/>
+						<!-- Code Input -->
+						<div class="flex flex-col gap-3">
+							<div class="relative">
+								<input
+									type="text"
+									bind:value={twoFACode}
+									oninput={handle2FAInput}
+									onkeydown={(e) => e.key === 'Enter' && verify2FA()}
+									placeholder={useBackupCode ? 'Enter backup code' : m.twofa_code_placeholder()}
+									class="input text-center font-mono tracking-wider"
+									class:text-2xl={!useBackupCode}
+									class:text-lg={useBackupCode}
+									maxlength={useBackupCode ? 10 : 6}
+									autocomplete="off"
+								/>
 
-									<!-- Character counter for backup codes -->
-									{#if useBackupCode}
-										<div class="mt-1 text-center text-xs text-surface-500">
-											{twoFACode.length}/10
-										</div>
-									{/if}
-								</div>
-
-								<!-- Toggle Code Type -->
-								<div class="text-center">
-									<button type="button" onclick={toggle2FACodeType} class="text-sm text-primary-500 underline hover:text-primary-600">
-										{useBackupCode ? m.twofa_use_authenticator() : m.twofa_use_backup_code()}
-									</button>
-								</div>
-
-								<!-- Action Buttons -->
-								<div class="flex gap-3">
-									<button type="button" onclick={back2FAToLogin} class="variant-soft-surface btn flex-1">
-										<iconify-icon icon="mdi:arrow-left" width="20" class="mr-2"></iconify-icon>
-										{m.button_back()}
-									</button>
-
-									<button
-										type="button"
-										onclick={verify2FA}
-										disabled={!twoFACode.trim() ||
-											isVerifying2FA ||
-											(!useBackupCode && twoFACode.length !== 6) ||
-											(useBackupCode && twoFACode.length < 8)}
-										class="variant-filled-primary btn flex-1"
-									>
-										{#if isVerifying2FA}
-											<img src="/Spinner.svg" alt="Loading.." class="mr-2 h-5 invert filter" />
-											{m.twofa_verifying()}
-										{:else}
-											<iconify-icon icon="mdi:check" width="20" class="mr-2"></iconify-icon>
-											{m.twofa_verify_button()}
-										{/if}
-									</button>
-								</div>
-
-								<!-- Help Text -->
-								<div class="mt-2 text-center">
-									<div class="text-xs text-surface-500">
-										{#if !useBackupCode}
-											<p>Enter the 6-digit code from your authenticator app</p>
-										{:else}
-											<p>Enter one of your 8-character backup codes</p>
-										{/if}
+								<!-- Character counter for backup codes -->
+								{#if useBackupCode}
+									<div class="mt-1 text-center text-xs text-surface-500">
+										{twoFACode.length}/10
 									</div>
+								{/if}
+							</div>
+
+							<!-- Toggle Code Type -->
+							<div class="text-center">
+								<button
+									type="button"
+									onclick={toggle2FACodeType}
+									class="text-sm text-primary-500 underline hover:text-primary-600"
+									aria-label={useBackupCode ? m.twofa_use_authenticator() : m.twofa_use_backup_code()}
+								>
+									{useBackupCode ? m.twofa_use_authenticator() : m.twofa_use_backup_code()}
+								</button>
+							</div>
+
+							<!-- Action Buttons -->
+							<div class="flex gap-3">
+								<button type="button" onclick={back2FAToLogin} class="variant-soft-surface btn flex-1" aria-label={m.button_back()}>
+									<iconify-icon icon="mdi:arrow-left" width="20" class="mr-2"></iconify-icon>
+									{m.button_back()}
+								</button>
+
+								<button
+									type="button"
+									onclick={verify2FA}
+									disabled={!twoFACode.trim() ||
+										isVerifying2FA ||
+										(!useBackupCode && twoFACode.length !== 6) ||
+										(useBackupCode && twoFACode.length < 8)}
+									class="variant-filled-primary btn flex-1"
+									aria-label={m.twofa_verify_button()}
+								>
+									{#if isVerifying2FA}
+										<img src="/Spinner.svg" alt="Loading.." class="mr-2 h-5 invert filter" />
+										{m.twofa_verifying()}
+									{:else}
+										<iconify-icon icon="mdi:check" width="20" class="mr-2"></iconify-icon>
+										{m.twofa_verify_button()}
+									{/if}
+								</button>
+							</div>
+
+							<!-- Help Text -->
+							<div class="mt-2 text-center">
+								<div class="text-xs text-surface-500">
+									{#if !useBackupCode}
+										<p>Enter the 6-digit code from your authenticator app</p>
+									{:else}
+										<p>Enter one of your 8-character backup codes</p>
+									{/if}
 								</div>
 							</div>
 						</div>
-					{/if}
+					</div>
+				{/if}
 
-					<!-- Forgotten Password -->
-					{#if PWforgot && !PWreset}
-						<form
-							method="POST"
-							action="?/forgotPW"
-							use:forgotEnhance
-							bind:this={formElement}
-							class="flex w-full flex-col gap-3"
-							class:hide={active !== 0}
-							inert={active !== 0}
-						>
-							<!-- Email field -->
-							<FloatingInput
-								id="emailforgot"
-								name="email"
-								type="email"
-								tabindex={emailTabIndex}
-								autocomplete="email"
-								autocapitalize="none"
-								spellcheck={false}
-								bind:value={$forgotForm.email}
-								label={m.form_emailaddress()}
-								{...$forgotConstraints.email}
-								icon="mdi:email"
-								iconColor="black"
-								textColor="black"
-							/>
-							{#if $forgotErrors.email}
-								<span class="invalid text-xs text-error-500">
-									{$forgotErrors.email}
-								</span>
-							{/if}
+				<!-- Forgotten Password -->
+				{#if PWforgot && !PWreset}
+					<form
+						method="POST"
+						action="?/forgotPW"
+						use:enhance={forgotSubmit}
+						bind:this={formElement}
+						class="flex w-full flex-col gap-3"
+						class:hide={active !== 0}
+						inert={active !== 0}
+					>
+						<!-- Email field -->
+						<FloatingInput
+							id="emailforgot"
+							name="email"
+							type="email"
+							tabindex={emailTabIndex}
+							autocomplete="email"
+							autocapitalize="none"
+							spellcheck={false}
+							bind:value={forgotForm.data.email}
+							label={m.email()}
+							required
+							icon="mdi:email"
+							iconColor="black"
+							textColor="black"
+						/>
+						{#if forgotForm.errors.email}
+							<span class="invalid text-xs text-error-500">
+								{forgotForm.errors.email[0]}
+							</span>
+						{/if}
 
-							{#if $forgotAllErrors && !$forgotErrors.email}
-								<span class="invalid text-xs text-error-500">
-									{$forgotAllErrors}
-								</span>
-							{/if}
+						{#if Object.keys(forgotForm.errors).length > 0 && !forgotForm.errors.email}
+							<span class="invalid text-xs text-error-500">
+								{Object.values(forgotForm.errors).flat().join(', ')}
+							</span>
+						{/if}
 
-							<div class="mt-4 flex items-center justify-between">
-								<button type="submit" class="variant-filled-surface btn" aria-label={m.form_resetpassword()}>
-									{m.form_resetpassword()}
-									<!-- Optimized loading indicators -->
-									{#if isSubmitting}
-										<img src="/Spinner.svg" alt="" aria-hidden="true" decoding="async" class="ml-4 h-6 invert filter" />
-									{/if}
-								</button>
+						<div class="mt-4 flex items-center justify-between">
+							<button type="submit" class="variant-filled-surface btn" aria-label={m.form_resetpassword()}>
+								{m.form_resetpassword()}
+								<!-- Optimized loading indicators -->
+								{#if isSubmitting}
+									<img src="/Spinner.svg" alt="" aria-hidden="true" decoding="async" class="ml-4 h-6 invert filter" />
+								{/if}
+							</button>
 
-								<!-- Back button  -->
-								<button
-									type="button"
-									class="variant-filled-surface btn-icon"
-									aria-label="Back"
-									onclick={() => {
-										PWforgot = false;
-										PWreset = false;
-									}}
-								>
-									<iconify-icon icon="mdi:arrow-left-circle" width="38"></iconify-icon>
-								</button>
-							</div>
-						</form>
-					{/if}
+							<!-- Back button  -->
+							<button
+								type="button"
+								class="variant-filled-surface btn-icon"
+								aria-label="Back"
+								onclick={() => {
+									PWforgot = false;
+									PWreset = false;
+								}}
+							>
+								<iconify-icon icon="mdi:arrow-left-circle" width="38"></iconify-icon>
+							</button>
+						</div>
+					</form>
+				{/if}
 
-					<!-- Reset Password -->
-					{#if PWforgot && PWreset}
-						<form
-							method="POST"
-							action="?/resetPW"
-							use:resetEnhance
-							bind:this={formElement}
-							class="flex w-full flex-col gap-3"
-							class:hide={active !== 0}
-							inert={active !== 0}
-						>
-							<!-- Hidden fields -->
-							<input type="hidden" name="email" bind:value={$resetForm.email} />
-							<input type="hidden" name="token" bind:value={$resetForm.token} />
+				<!-- Reset Password -->
+				{#if PWforgot && PWreset}
+					<form
+						method="POST"
+						action="?/resetPW"
+						use:enhance={resetSubmit}
+						bind:this={formElement}
+						class="flex w-full flex-col gap-3"
+						class:hide={active !== 0}
+						inert={active !== 0}
+					>
+						<!-- Hidden fields -->
+						<input type="hidden" name="email" bind:value={resetForm.data.email} />
+						<input type="hidden" name="token" bind:value={resetForm.data.token} />
 
-							<!-- Password field -->
-							<FloatingInput
-								id="passwordreset"
-								name="password"
-								type="password"
-								tabindex={passwordTabIndex}
-								bind:value={$resetForm.password}
-								{...$resetConstraints.password}
-								{showPassword}
-								autocomplete="new-password"
-								label={m.form_password()}
-								icon="mdi:lock"
-								iconColor="black"
-								textColor="black"
-							/>
-							{#if $resetErrors.password}
-								<span class="invalid text-xs text-error-500">
-									{$resetErrors.password}
-								</span>
-							{/if}
+						<!-- Password field -->
+						<FloatingInput
+							id="passwordreset"
+							name="password"
+							type="password"
+							tabindex={passwordTabIndex}
+							bind:value={resetForm.data.password}
+							required
+							{showPassword}
+							autocomplete="new-password"
+							label={m.form_password()}
+							icon="mdi:lock"
+							iconColor="black"
+							textColor="black"
+						/>
+						{#if resetForm.errors.password}
+							<span class="invalid text-xs text-error-500">
+								{resetForm.errors.password[0]}
+							</span>
+						{/if}
 
-							<!-- Confirm Password field -->
-							<FloatingInput
-								id="confirm_passwordreset"
-								name="confirm_password"
-								type="password"
-								tabindex={confirmPasswordTabIndex}
-								bind:value={$resetForm.confirm_password}
-								{showPassword}
-								autocomplete="new-password"
-								label={m.form_confirmpassword()}
-								icon="mdi:lock"
-								iconColor="black"
-								textColor="black"
-							/>
+						<!-- Confirm Password field -->
+						<FloatingInput
+							id="confirm_passwordreset"
+							name="confirm_password"
+							type="password"
+							tabindex={confirmPasswordTabIndex}
+							bind:value={resetForm.data.confirm_password}
+							{showPassword}
+							autocomplete="new-password"
+							label={m.confirm_password?.() || m.form_confirmpassword?.()}
+							icon="mdi:lock"
+							iconColor="black"
+							textColor="black"
+						/>
 
-							<!-- Password Strength Indicator -->
-							<PasswordStrength password={$resetForm.password} confirmPassword={$resetForm.confirm_password} />
-							<!-- Registration Token -->
-							<FloatingInput
-								id="tokenresetPW"
-								name="token"
-								type="password"
-								bind:value={$resetForm.token}
-								{showPassword}
-								label={m.signin_registrationtoken()}
-								icon="mdi:lock"
-								iconColor="black"
-								textColor="black"
-								required
-							/>
+						<!-- Password Strength Indicator -->
+						<PasswordStrength password={resetForm.data.password} confirmPassword={resetForm.data.confirm_password} />
+						<!-- Registration Token -->
+						<FloatingInput
+							id="tokenresetPW"
+							name="token"
+							type="password"
+							bind:value={resetForm.data.token}
+							{showPassword}
+							label={m.registration_token?.() || m.signin_registrationtoken?.()}
+							icon="mdi:lock"
+							iconColor="black"
+							textColor="black"
+							required
+						/>
 
-							{#if $resetErrors.token}
-								<span class="invalid text-xs text-error-500">
-									{$resetErrors.token}
-								</span>
-							{/if}
+						{#if resetForm.errors.token}
+							<span class="invalid text-xs text-error-500">
+								{resetForm.errors.token[0]}
+							</span>
+						{/if}
 
-							{#if $resetAllErrors && !$resetErrors}
-								<span class="invalid text-xs text-error-500">
-									{$resetAllErrors}
-								</span>
-							{/if}
+						{#if Object.keys(resetForm.errors).length > 0 && !resetForm.errors.token}
+							<span class="invalid text-xs text-error-500">
+								{Object.values(resetForm.errors).flat().join(', ')}
+							</span>
+						{/if}
 
-							<input type="email" name="email" bind:value={$resetForm.email} hidden />
+						<input type="email" name="email" bind:value={resetForm.data.email} hidden />
 
-							<div class="mt-4 flex items-center justify-between">
-								<button type="submit" aria-label={m.signin_savenewpassword()} class="variant-filled-surface btn ml-2 mt-6">
-									{m.signin_savenewpassword()}
-									<!-- Optimized loading indicators -->
-									{#if isSubmitting}
-										<img src="/Spinner.svg" alt="" aria-hidden="true" decoding="async" class="ml-4 h-6" />
-									{/if}
-								</button>
+						<div class="mt-4 flex items-center justify-between">
+							<button type="submit" aria-label={m.signin_savenewpassword()} class="variant-filled-surface btn ml-2 mt-6">
+								{m.signin_savenewpassword()}
+								<!-- Optimized loading indicators -->
+								{#if isSubmitting}
+									<img src="/Spinner.svg" alt="" aria-hidden="true" decoding="async" class="ml-4 h-6" />
+								{/if}
+							</button>
 
-								<!-- Back button  -->
-								<button
-									type="button"
-									aria-label={m.button_back()}
-									class="variant-filled-surface btn-icon"
-									onclick={() => {
-										PWforgot = false;
-										PWreset = false;
-									}}
-								>
-									<iconify-icon icon="mdi:arrow-left-circle" width="38"></iconify-icon>
-								</button>
-							</div>
-						</form>
-					{/if}
-				{:else}
-					<button onclick={onClick} type="button" aria-label="Signup" class="variant-ghost btn mt-2 w-full flex-col justify-center text-surface-500">
-						<p class="font-bold text-error-500">{m.signin_no_user()}</p>
-						<p>
-							{m.signin_signup_first_admin()}
-						</p>
-					</button>
+							<!-- Back button  -->
+							<button
+								type="button"
+								aria-label={m.button_back()}
+								class="variant-filled-surface btn-icon"
+								onclick={() => {
+									PWforgot = false;
+									PWreset = false;
+								}}
+							>
+								<iconify-icon icon="mdi:arrow-left-circle" width="38"></iconify-icon>
+							</button>
+						</div>
+					</form>
 				{/if}
 			</div>
 		</div>

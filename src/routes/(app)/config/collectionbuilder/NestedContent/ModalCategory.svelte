@@ -1,14 +1,12 @@
-<!-- 
+<!--
 @files src/routes/(app)/config/collection/ModalCategory.svelte
 @component
 **This component displays a modal for editing a category**
 -->
 <script lang="ts">
-	import type { CollectionData } from '@src/content/types';
-	import { v4 as uuidv4 } from 'uuid';
-
 	// Stores
 	import { contentStructure } from '@src/stores/collectionStore.svelte';
+	import { logger } from '@utils/logger';
 	import { getModalStore, type ModalSettings } from '@skeletonlabs/skeleton';
 
 	// Components
@@ -33,18 +31,23 @@
 		id?: string; // Optional ID for existing categories
 	}
 
-	let { parent, existingCategory = { name: '', icon: '' } }: Props = $props();
+	const { parent, existingCategory = { name: '', icon: '' } }: Props = $props();
 
 	const modalStore = getModalStore();
 
 	// State variables for form and UI
-	let formData = $state<FormData>({
-		newCategoryName: existingCategory.name ?? '',
-		newCategoryIcon: existingCategory.icon ?? ''
+	const formData = $state<FormData>({
+		newCategoryName: '',
+		newCategoryIcon: ''
 	});
 	let isSubmitting = $state(false);
 	let formError = $state<string | null>(null);
 	let validationErrors = $state<Record<string, string>>({});
+
+	$effect(() => {
+		formData.newCategoryName = existingCategory.name ?? '';
+		formData.newCategoryIcon = existingCategory.icon ?? '';
+	});
 
 	/**
 	 * Validates the form input fields.
@@ -74,7 +77,7 @@
 	async function onFormSubmit(event: Event): Promise<void> {
 		event.preventDefault(); // Prevent default form submission
 		if (!validateForm()) {
-			console.error('Form validation failed.');
+			logger.error('Form validation failed.');
 			return;
 		}
 
@@ -92,7 +95,7 @@
 			}
 			modalStore.close(); // Close modal on success
 		} catch (error) {
-			console.error('Error submitting category form:', error);
+			logger.error('Error submitting category form:', error);
 			formError = error instanceof Error ? error.message : 'Error submitting form';
 		} finally {
 			isSubmitting = false;
@@ -108,7 +111,7 @@
 		// This check is a simplification; a more robust solution would determine if `existingCategory.children`
 		// holds any values based on your `ContentNode` definition or fetch it live.
 		// For now, assuming `existingCategory.children` refers to a property that exists if children are present.
-		if (existingCategory.nodeType === 'category' && contentStructure.value.some(node => node.parentId === existingCategory._id)) {
+		if (existingCategory.nodeType === 'category' && contentStructure.value.some((node) => node.parentId === existingCategory._id)) {
 			formError = 'Cannot delete category with nested items (collections or subcategories). Please move or delete them first.';
 			return;
 		}
@@ -157,10 +160,10 @@
 					}
 
 					// Update the global content structure store after successful deletion
-					contentStructure.set(newStructure);
+					contentStructure.value = newStructure;
 					modalStore.close(); // Close modal after successful deletion
 				} catch (error) {
-					console.error('Error deleting category:', error);
+					logger.error('Error deleting category:', error);
 					formError = error instanceof Error ? error.message : 'Failed to delete category';
 				} finally {
 					isSubmitting = false;

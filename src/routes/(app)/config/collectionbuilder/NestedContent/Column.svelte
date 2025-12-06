@@ -17,16 +17,17 @@ Features:
 
 <script lang="ts">
 	import Column from './Column.svelte'; // Recursive import for nested columns
+	import { logger } from '@utils/logger';
 	import { goto } from '$app/navigation';
 
 	// Stores
-	import { mode } from '@stores/collectionStore.svelte';
+	import { setMode } from '@stores/collectionStore.svelte';
 
 	// Svelte DND-actions
-	import { flip } from 'svelte/animate';
-	import { dndzone, type DndEvent } from 'svelte-dnd-action';
-	import type { DndItem } from './types';
 	import type { DatabaseId } from '@root/src/databases/dbInterface';
+	import { dndzone, type DndEvent } from 'svelte-dnd-action';
+	import { flip } from 'svelte/animate';
+	import type { DndItem } from './types';
 
 	interface Props {
 		item: DndItem; // The current item this column represents
@@ -43,9 +44,9 @@ Features:
 	let { item, children = $bindable([]), level, onNodeReorder, isCategory = false, onEditCategory }: Props = $props();
 
 	// Derived properties for convenience
-	let name = $derived(item.name);
-	let path = $derived(item.path);
-	let icon = $derived(item.icon);
+	const name = $derived(item.name);
+	const path = $derived(item.path);
+	const icon = $derived(item.icon);
 
 	// UI state for drag operations and updates
 	let isDragging = $state(false); // True if an item is being dragged within this column's dndzone
@@ -55,7 +56,7 @@ Features:
 	const flipDurationMs = 200;
 
 	// Computed padding for visual indentation based on `level`
-	let paddingLeft = $derived(level === 0 ? '0' : `${level * 1.5}rem`);
+	const paddingLeft = $derived(level === 0 ? '0' : `${level * 1.5}rem`);
 
 	/**
 	 * Handles the `consider` event for this column's dndzone.
@@ -69,7 +70,7 @@ Features:
 			children = e.detail.items;
 			updateError = null;
 		} catch (error) {
-			console.error('Error handling DnD consider in Column:', error);
+			logger.error('Error handling DnD consider in Column:', error);
 			updateError = error instanceof Error ? error.message : 'Error handling drag operation';
 		}
 	}
@@ -77,56 +78,35 @@ Features:
 	/**
 	 * Handles the `finalize` event for this column's dndzone.
 	 * This is where the actual state update occurs after a drag operation is completed.
-	 * It notifies the parent of the change, including the dragged item's new parent and the updated children list.
+	 * ONLY updates the local children array - Board handles propagation.
 	 * @param e CustomEvent from `dndzone`.
 	 */
 	function handleDndFinalize(e: CustomEvent<DndEvent<DndItem>>) {
 		isDragging = false;
 		try {
-			const draggedItemId = e.detail.info.id as string; // The ID of the item that was dragged
-			const eventType = e.detail.info.trigger; // 'droppedIntoAnother' or 'droppedIntoZone'
+			// Update the children array with the final state
+			// The $bindable binding will automatically propagate this to the parent's structureState
+			children = e.detail.items;
 
-			// The `children` array is already updated by `handleDndConsider` with the final items in this zone.
-			const finalChildrenInThisZone = e.detail.items;
-
-			let newParentId: DatabaseId | undefined;
-
-			if (eventType === 'droppedIntoZone') {
-				// Item was dropped *into* THIS column's dndzone.
-				// Therefore, THIS column's item becomes the new parent.
-				newParentId = item.id as DatabaseId;
-			} else if (eventType === 'droppedIntoAnother') {
-				// Item was dropped *from* THIS column's dndzone *into* another.
-				// Its new parent will be determined by the receiving zone.
-				// For this column's perspective, the item is simply removed, and its children list is updated.
-				// The `newParentId` should ideally be handled by the target zone.
-				// For the `onNodeReorder` callback, we pass undefined for the parent of the item that *left* this zone.
-				newParentId = undefined;
-			}
-
-			// Propagate the change up the component hierarchy.
-			// Pass the `draggedItemId`, its `newParentId`, and the `finalChildrenInThisZone`.
-			// The parent will use this information to rebuild the overall flat structure.
-			onNodeReorder(draggedItemId, newParentId, finalChildrenInThisZone);
+			// DO NOT call onNodeReorder here - it causes conflicts
+			// The Board's finalize handler will catch all changes through structureState
 
 			updateError = null;
 		} catch (error) {
-			console.error('Error handling DnD finalize in Column:', error);
+			logger.error('Error handling DnD finalize in Column:', error);
 			updateError = error instanceof Error ? error.message : 'Error finalizing drag operation';
 		}
-	}
-
-	/**
+	} /**
 	 * Handles click on a collection item, navigating to its edit page.
 	 * @param item The DndItem (collection) to navigate to.
 	 */
 	async function handleCollectionClick(item: Pick<DndItem, 'path'>) {
 		try {
 			isUpdating = true; // Indicate loading/updating state
-			mode.set('edit');
+			setMode('edit');
 			await goto(`/config/collectionbuilder/edit${item.path}`);
 		} catch (error) {
-			console.error('Error navigating to collection:', error);
+			logger.error('Error navigating to collection:', error);
 			updateError = error instanceof Error ? error.message : 'Error navigating to collection';
 		} finally {
 			isUpdating = false;
@@ -171,30 +151,39 @@ Features:
 		</div>
 	{/if}
 
-	{#if isCategory}
+	<!-- Categories always have a drop zone for nesting, even if empty -->
+	<!-- Collections only show drop zone if they have children -->
+	{#if isCategory || (children && children.length > 0)}
 		<section
-			use:dndzone={{ items: children, flipDurationMs, centreDraggedOnCursor: true }}
+			use:dndzone={{
+				items: children || [],
+				flipDurationMs,
+				centreDraggedOnCursor: true,
+				dropTargetStyle: { outline: 'rgba(0, 255, 102, 0.7) solid 2px' }
+			}}
 			onconsider={handleDndConsider}
 			onfinalize={handleDndFinalize}
-			class="min-h-10 py-1"
+			class={isCategory ? 'min-h-[60px] rounded border-2 border-dashed border-surface-400/20 py-1' : 'min-h-10 py-1'}
 			role="list"
 			aria-label={`${isCategory ? 'Category' : 'Collection'} children`}
 		>
-			{#each children as child (child.id)}
-				<div animate:flip={{ duration: flipDurationMs }} class="mx-0.5 p-0.5">
-					<Column
-						item={child}
-						children={child.children ?? []}
-						level={level + 1}
-						isCategory={child.nodeType === 'category'}
-						{onNodeReorder}
-						`onNodeReorder`
-						callback
-						down
-						{onEditCategory}
-					/>
-				</div>
-			{/each}
+			{#if children && children.length > 0}
+				{#each children as child (child.id)}
+					<div animate:flip={{ duration: flipDurationMs }} class="mx-0.5 p-0.5">
+						<Column
+							item={child}
+							children={child.children ?? []}
+							level={level + 1}
+							isCategory={child.nodeType === 'category'}
+							{onNodeReorder}
+							{onEditCategory}
+						/>
+					</div>
+				{/each}
+			{:else if isCategory}
+				<!-- Empty state for categories to show they can accept items -->
+				<div class="flex items-center justify-center py-4 text-sm italic text-surface-400">Drop items here</div>
+			{/if}
 		</section>
 	{/if}
 </div>

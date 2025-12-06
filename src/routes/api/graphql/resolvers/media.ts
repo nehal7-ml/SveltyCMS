@@ -20,16 +20,16 @@
  * - Provides the foundation for querying media data through the GraphQL API
  */
 
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
+import type { DatabaseAdapter, BaseEntity } from '@src/databases/dbInterface';
 
-import type { DatabaseAdapter } from '@src/databases/dbInterface';
 // System Logs
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Permissions
 
 // Types
-import type { User } from '@src/auth/types';
+import type { User } from '@src/databases/auth/types';
 
 // Registers media schemas dynamically.
 export function mediaTypeDefs() {
@@ -88,10 +88,18 @@ interface GraphQLContext {
 // GraphQL parent type for media resolvers
 type MediaResolverParent = unknown;
 
-// Builds resolvers for querying media data with pagination support.
-import type { DatabaseAdapter } from '@src/databases/dbInterface';
+// Media entity type with tenantId support
+interface MediaEntity extends BaseEntity {
+	url?: string;
+	tenantId?: string;
+}
 
+// Builds resolvers for querying media data with pagination support.
 export function mediaResolvers(dbAdapter: DatabaseAdapter) {
+	if (!dbAdapter) {
+		logger.error('Database adapter is not initialized');
+		throw new Error('Database adapter is not initialized');
+	}
 	const fetchWithPagination = async (contentTypes: string, pagination: { page: number; limit: number }, context: GraphQLContext) => {
 		// Check media permissions
 		if (!context.user) {
@@ -101,12 +109,7 @@ export function mediaResolvers(dbAdapter: DatabaseAdapter) {
 
 		// Authentication is handled by hooks.server.ts - user presence confirms access
 
-		if (!dbAdapter) {
-			logger.error('Database adapter is not initialized');
-			throw Error('Database adapter is not initialized');
-		}
-
-		if (privateEnv.MULTI_TENANT && !context.tenantId) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !context.tenantId) {
 			logger.error('GraphQL: Tenant ID is missing from context in a multi-tenant setup.');
 			throw new Error('Internal Server Error: Tenant context is missing.');
 		}
@@ -115,13 +118,17 @@ export function mediaResolvers(dbAdapter: DatabaseAdapter) {
 
 		try {
 			// --- MULTI-TENANCY: Scope the query by tenantId ---
-			const query: { tenantId?: string } = {};
-			if (privateEnv.MULTI_TENANT) {
+			const query: Partial<MediaEntity> = {};
+			if (getPrivateSettingSync('MULTI_TENANT')) {
 				query.tenantId = context.tenantId;
 			}
 
 			// Use query builder pattern consistent with REST API
-			const queryBuilder = dbAdapter.queryBuilder(contentTypes).where(query).sort('createdAt', 'desc').paginate({ page, pageSize: limit });
+			const queryBuilder = dbAdapter
+				.queryBuilder<MediaEntity>(contentTypes)
+				.where(query)
+				.sort('createdAt', 'desc')
+				.paginate({ page, pageSize: limit });
 
 			const result = await queryBuilder.execute();
 

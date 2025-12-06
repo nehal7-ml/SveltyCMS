@@ -1,44 +1,49 @@
 <!-- 
-@files src/components/system/builder/AddWidget.svelte
-@description - Add Widget component
+@file src/components/system/builder/AddWidget.svelte
+@description Add widget component for the system builder
 -->
 
 <script lang="ts">
-	import { asAny } from '@utils/utils';
-
 	// Components
-	import widgets from '@widgets';
-	import DropDown from '@components/system/dropDown/DropDown.svelte';
 	import PageTitle from '@components/PageTitle.svelte';
+	import DropDown from '@components/system/dropDown/DropDown.svelte';
+	import { widgetFunctions } from '@stores/widgetStore.svelte';
+	import type { WidgetFunction } from '@src/widgets/types';
 	import InputSwitch from './InputSwitch.svelte';
+
+	import type { AddWidgetProps } from './types';
 
 	let {
 		fields = $bindable([]),
 		addField = $bindable(false),
 		editField = $bindable(false),
-		selected_widget = $bindable<keyof typeof widgets | null>(null),
+		selected_widget = $bindable(null),
 		field = $bindable({
 			label: '',
-			widget: { key: null as keyof typeof widgets | null, GuiFields: {} }
+			db_fieldName: '',
+			translated: false,
+			required: false,
+			widget: { key: null as string | null, GuiFields: {} as Record<string, any> }
 		})
-	} = $props();
+	}: AddWidgetProps = $props();
 
-	const widget_keys = Object.keys(widgets) as unknown as keyof typeof widgets;
-	let guiSchema = $state<(typeof widgets)[typeof widget_keys]['GuiSchema'] | undefined>(undefined);
+	const widget_keys = Object.keys($widgetFunctions);
+	let guiSchema = $state<WidgetFunction['GuiSchema'] | undefined>(undefined);
 
 	$effect(() => {
 		if (selected_widget) {
-			guiSchema = widgets[selected_widget]?.GuiSchema;
+			const widgetFn = $widgetFunctions[selected_widget];
+			guiSchema = widgetFn?.GuiSchema as WidgetFunction['GuiSchema'];
 		}
 	});
 
 	function handleSave() {
 		if (!selected_widget) return;
 		field.widget = { key: selected_widget, GuiFields: field.widget.GuiFields };
-		field.label = asAny(field.widget.GuiFields).label;
-		fields = [...fields, field];
+		field.label = field.widget.GuiFields.label;
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		fields = [...fields, field as any];
 		addField = false;
-		console.log(fields);
 	}
 
 	function handleCancel() {
@@ -61,7 +66,7 @@
 	{#if !selected_widget && !editField}
 		<div class="flex items-center justify-center">
 			<button type="button" onclick={handleCancel} aria-label="Cancel" class="mb-[20px] ml-auto mr-[40px]">X</button>
-			<DropDown items={widget_keys} bindselected={selected_widget} label="Select Widget" />
+			<DropDown items={widget_keys} selected={selected_widget} label="Select Widget" />
 		</div>
 	{:else}
 		<div class="flex-col items-center justify-center overflow-auto">
@@ -76,8 +81,9 @@
 			</div>
 
 			{#if guiSchema}
-				{#each Object.entries(guiSchema) as [property, value]}
-					<InputSwitch bind:value={field.widget.GuiFields[property]} widget={asAny(value).widget} key={property} />
+				{#each Object.entries(guiSchema) as [property, value] (property)}
+					<!-- eslint-disable-next-line @typescript-eslint/no-explicit-any -->
+					<InputSwitch value={field.widget.GuiFields[property]} widget={(value as any).widget} key={property} />
 				{/each}
 			{/if}
 		</div>

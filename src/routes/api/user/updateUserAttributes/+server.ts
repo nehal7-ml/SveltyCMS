@@ -18,21 +18,21 @@
  * Body: JSON object with 'user_id' and 'newUserData' properties.
  */
 
-import { privateEnv } from '@root/config/private';
+import { getPrivateSettingSync } from '@src/services/settingsService';
 
 import { error, json, type HttpError } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 
 // Auth and permission helpers
-import { SESSION_COOKIE_NAME } from '@src/auth/constants';
-import { getCacheStore } from '@src/cacheStore/index.server';
+import { SESSION_COOKIE_NAME } from '@src/databases/auth/constants';
+import { cacheService } from '@src/databases/CacheService';
 import { auth } from '@src/databases/db';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Input validation
-import { email, maxLength, minLength, object, optional, parse, pipe, string, type BaseSchema, type ValiError } from 'valibot';
+import { email, maxLength, minLength, object, optional, parse, pipe, string } from 'valibot';
 
 // Define the base schema for user data. The 'role' is handled separately for security.
 const baseUserDataSchema = object({
@@ -76,7 +76,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 
 		// --- MULTI-TENANCY SECURITY CHECK ---
 		// If an admin is editing another user, ensure the target user is in the same tenant.
-		if (privateEnv.MULTI_TENANT && !isEditingSelf) {
+		if (getPrivateSettingSync('MULTI_TENANT') && !isEditingSelf) {
 			if (!tenantId) {
 				throw error(500, 'Tenant could not be identified for this operation.');
 			}
@@ -93,7 +93,7 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		}
 
 		// **SECURITY FEATURE**: Prevent users from changing their own role
-		let schemaToUse: BaseSchema = baseUserDataSchema;
+		let schemaToUse = baseUserDataSchema;
 		if (newUserData.role) {
 			if (isEditingSelf) {
 				// If a user tries to submit a 'role' change for themselves, throw an error.
@@ -125,9 +125,8 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 			const sessionId = cookies.get(SESSION_COOKIE_NAME);
 			if (sessionId) {
 				try {
-					const cacheStore = getCacheStore();
 					// The session will be re-validated on the next request, so we can just delete the old cache entry.
-					await cacheStore.delete(sessionId);
+					await cacheService.delete(sessionId);
 					logger.debug(`Session cache invalidated for self-updated user ${userIdToUpdate}`);
 				} catch (cacheError) {
 					logger.warn(`Failed to invalidate session cache during self-update: ${cacheError}`);
@@ -135,9 +134,20 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 			}
 		}
 
-		// Invalidate admin cache since user data has changed
-		const { invalidateAdminCache } = await import('@src/hooks.server');
-		invalidateAdminCache('users', tenantId);
+		// Note: We no longer cache user data by ID or email - session cache is the only cache
+		// This eliminates redundant caching and cache invalidation complexity
+
+		// Invalidate admin users list cache so UI updates immediately
+		try {
+			await cacheService.clearByPattern(`api:*:/api/admin/users*`, tenantId);
+			logger.debug('Admin users list cache cleared after user update');
+		} catch (cacheError) {
+			logger.warn(`Failed to clear admin users cache: ${cacheError}`);
+		}
+
+		// Invalidate roles cache since user data may have changed
+		const { invalidateRolesCache } = await import('@src/hooks/handleAuthorization');
+		invalidateRolesCache(tenantId);
 
 		logger.info('User attributes updated successfully', {
 			user_id: userIdToUpdate,
@@ -153,9 +163,9 @@ export const PUT: RequestHandler = async ({ request, locals, cookies }) => {
 		});
 	} catch (err) {
 		// Handle specific validation errors from Valibot.
-		if (err.name === 'ValiError') {
-			const valiError = err as ValiError;
-			const issues = valiError.issues.map((issue) => issue.message).join(', ');
+		if (err instanceof Error && err.name === 'ValiError') {
+			const valiError = err as unknown as { issues: Array<{ message: string }> };
+			const issues = valiError.issues.map((issue: { message: string }) => issue.message).join(', ');
 			logger.warn('Invalid input for updateUserAttributes API:', { issues });
 			throw error(400, `Invalid input: ${issues}`);
 		}

@@ -2,21 +2,6 @@
  * @file: src/routes/api/user/createToken/+server.ts
  * @description: API endpoint for creating user registration tokens and sending invitation emails
  *
- * Thi		// Invalidate the admin cache for tokens so the UI refreshes immediately
-
-		invalidateAdminCache('tokens', tenantId); // Return success response
-
-		return json({
-			success: true,
-			message: emailSkipped 
-				? 'Token created successfully. Email sending skipped (development mode - configure SMTP settings to enable email).'
-				: 'Token created and email sent successfully.',
-			token: { value: token, expires: expires.toISOString() },
-			email_sent: !emailSkipped
-		});provides functionality to:
- * - Create new registration tokens for inviting users, scoped to the current tenant.
- * - Handle token creation requests
- *
  * Features:
  * - **Defense in Depth**: Specific permission checking for token creation.
  * - Input validation using Valibot schemas.
@@ -25,24 +10,25 @@
  * - Error handling and logging.
  */
 
-import { json, error, type HttpError } from '@sveltejs/kit';
+import { getPrivateSettingSync } from '@src/services/settingsService';
+import { error, json, type HttpError } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { privateEnv } from '@root/config/private';
 
-// Auth (Database Agnostic)
-import { auth } from '@src/databases/db';
-import { roles, initializeRoles } from '@root/config/roles';
+// Auth
+import type { ISODateString } from '@src/content/types';
+import { auth, dbAdapter } from '@src/databases/db';
+import { getDefaultRoles } from '@src/databases/auth/defaultRoles';
 
 // System Logger
-import { logger } from '@utils/logger.svelte';
+import { logger } from '@utils/logger.server';
 
 // Cache invalidation
-import { invalidateAdminCache } from '@src/hooks.server';
+import { cacheService } from '@src/databases/CacheService';
 
 // Input validation
 import { addUserTokenSchema } from '@utils/formSchemas';
-import { parse, type ValiError } from 'valibot';
 import { v4 as uuidv4 } from 'uuid';
+import { parse } from 'valibot';
 
 // ParaglideJS
 import { getLocale } from '@src/paraglide/runtime';
@@ -56,7 +42,7 @@ export const POST: RequestHandler = async ({ request, locals, fetch, url }) => {
 		// 2. User has correct role for 'api:token' endpoint
 		// 3. User belongs to correct tenant (if multi-tenant)
 
-		if (!auth) {
+		if (!auth || !dbAdapter) {
 			logger.error('Authentication system is not initialized');
 			throw error(500, 'Internal Server Error: Auth system not initialized');
 		}
@@ -67,17 +53,16 @@ export const POST: RequestHandler = async ({ request, locals, fetch, url }) => {
 		logger.debug('Received token creation request:', { ...body, tenantId }); // Validate input using the Valibot schema
 
 		const validatedData = parse(addUserTokenSchema, body);
-		logger.debug('Validated data:', validatedData); // Initialize roles and validate the selected role
+		logger.debug('Validated data:', validatedData); // Validate the selected role
 
-		await initializeRoles();
-		const roleInfo = roles.find((r) => r._id === validatedData.role);
+		const roleInfo = getDefaultRoles().find((r) => r._id === validatedData.role);
 		if (!roleInfo) {
 			throw error(400, 'Invalid role selected.');
 		}
 
 		// --- MULTI-TENANCY: Scope checks to the current tenant ---
 		const checkCriteria: { email: string; tenantId?: string } = { email: validatedData.email };
-		if (privateEnv.MULTI_TENANT) {
+		if (getPrivateSettingSync('MULTI_TENANT')) {
 			checkCriteria.tenantId = tenantId;
 		} // Quick checks (fail fast)
 
@@ -88,11 +73,12 @@ export const POST: RequestHandler = async ({ request, locals, fetch, url }) => {
 			throw error(409, 'A user with this email address already exists in this tenant.');
 		}
 
-		if (existingTokens && existingTokens.length > 0) {
+		if (existingTokens && existingTokens.success && existingTokens.data && existingTokens.data.length > 0) {
 			logger.warn('Attempted to create a token for an email that already has one in this tenant', { email: validatedData.email, tenantId });
 			throw error(409, 'An invitation token for this email already exists in this tenant. Please delete the existing token first.');
-		} // Calculate expiration date
+		}
 
+		// Calculate expiration date
 		const expirationInSeconds: Record<string, number> = {
 			'2 hrs': 7200,
 			'12 hrs': 43200,
@@ -107,21 +93,30 @@ export const POST: RequestHandler = async ({ request, locals, fetch, url }) => {
 		}
 		const expires = new Date(Date.now() + expiresInSeconds * 1000); // Create token with pre-generated user_id for when user actually registers
 
-		const token = await auth.db.createToken({
-			user_id: uuidv4(), // This will be used when the user actually registers
-			...(privateEnv.MULTI_TENANT && { tenantId }), // Add tenantId to the token
-			email: validatedData.email.toLowerCase(),
-			expires,
-			type: 'user-invite',
-			role: validatedData.role
+		// Create token in database
+		// For invite tokens, we use the database adapter directly since the user doesn't exist yet
+		const user_id = uuidv4();
+		const type = 'invite';
+
+		// Use dbAdapter directly for invite tokens since the user doesn't exist yet
+		const tokenResult = await dbAdapter.auth.createToken({
+			user_id: user_id,
+			email: validatedData.email.toLowerCase(), // Use the provided email directly
+			expires: expires.toISOString() as ISODateString,
+			type,
+			// Note: role is stored separately in the token metadata, not in the token itself
+			tenantId: tenantId || undefined
 		});
 
-		if (!token) {
-			logger.error('Failed to create token for email', { email: validatedData.email, tenantId });
-			throw error(500, 'Internal Server Error: Token creation failed.');
+		if (!tokenResult.success || !tokenResult.data) {
+			logger.error('Failed to create token', { email: validatedData.email, tenantId });
+			throw error(500, 'Failed to create token.');
 		}
 
-		logger.info('Token created successfully', { email: validatedData.email, tenantId }); // Generate invitation link
+		// Get the actual token string from the database result
+		const token = tokenResult.data;
+
+		logger.info('Token created successfully', { email: validatedData.email, role: validatedData.role, tenantId }); // Generate invitation link
 
 		const inviteLink = `${url.origin}/login?invite_token=${token}`; // Send invitation email
 
@@ -148,24 +143,47 @@ export const POST: RequestHandler = async ({ request, locals, fetch, url }) => {
 
 		if (!emailResponse.ok) {
 			const emailError = await emailResponse.json();
-			logger.error('Failed to send invitation email, rolling back token creation.', {
+			logger.error('Failed to send invitation email. Keeping token for manual/alternate delivery.', {
 				email: validatedData.email,
 				error: emailError
-			}); // Rollback: delete the created token
-			await auth.consumeToken(token);
-			throw error(500, emailError.message || 'Failed to send invitation email.');
+			});
+			// Do NOT consume token here; return token so admin can deliver link manually in dev
+			return json({
+				success: true,
+				message: emailError.message || 'Invitation email could not be sent (dev mode). Token preserved for manual delivery.',
+				token: { value: token, expires: expires.toISOString() },
+				email_sent: false,
+				dev_mode: true
+			});
 		}
 
 		// Check if email was actually sent or skipped due to dummy config
 		const emailResult = await emailResponse.json();
 		const emailSkipped = emailResult.dev_mode === true;
+		const smtpNotConfigured = emailResult.smtp_not_configured === true;
 
-		if (emailSkipped) {
-			logger.info('Token created successfully - email sending skipped (development mode)', {
+		if (emailSkipped || smtpNotConfigured) {
+			const reason = smtpNotConfigured ? 'SMTP not configured' : 'development mode';
+			logger.info(`Token created successfully - email sending skipped (${reason})`, {
 				email: validatedData.email,
 				role: roleInfo.name,
 				tenantId,
-				config_status: 'dummy_email_config'
+				config_status: smtpNotConfigured ? 'smtp_not_configured' : 'dummy_email_config'
+			});
+			// Return token so it can be delivered manually in dev
+			cacheService.delete('tokens', tenantId).catch((err) => {
+				logger.warn(`Failed to invalidate tokens cache: ${err.message}`);
+			});
+			return json({
+				success: true,
+				message: smtpNotConfigured
+					? 'Token created; email not sent - SMTP not configured. Please configure email settings in System Settings.'
+					: 'Token created; email sending skipped (development mode).',
+				token: { value: token, expires: expires.toISOString() },
+				email_sent: false,
+				dev_mode: emailSkipped,
+				smtp_not_configured: smtpNotConfigured,
+				user_message: smtpNotConfigured ? emailResult.user_message : undefined
 			});
 		} else {
 			logger.info('Token created and email sent successfully', {
@@ -175,16 +193,19 @@ export const POST: RequestHandler = async ({ request, locals, fetch, url }) => {
 			});
 		} // Invalidate the admin cache for tokens so the UI refreshes immediately
 
-		invalidateAdminCache('tokens', tenantId); // Return success response
+		cacheService.delete('tokens', tenantId).catch((err) => {
+			logger.warn(`Failed to invalidate tokens cache: ${err.message}`);
+		}); // Return success response
 
 		return json({
 			success: true,
 			message: 'Token created and email sent successfully.',
-			token: { value: token, expires: expires.toISOString() }
+			token: { value: token, expires: expires.toISOString() },
+			email_sent: true
 		});
 	} catch (err) {
-		if (err.name === 'ValiError') {
-			const valiError = err as ValiError;
+		if (err instanceof Error && err.name === 'ValiError') {
+			const valiError = err as unknown as { issues: Array<{ message: string }> };
 			const issues = valiError.issues.map((issue) => issue.message).join(', ');
 			logger.warn('Invalid input for createToken API:', { issues });
 			throw error(400, `Invalid input: ${issues}`);

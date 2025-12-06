@@ -5,8 +5,8 @@
 
 import { error, json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { logger } from '@utils/logger.svelte';
-import { getDefaultTwoFactorAuthService } from '@auth/twoFactorAuth';
+import { logger } from '@utils/logger.server';
+import { getDefaultTwoFactorAuthService } from '@src/databases/auth/twoFactorAuth';
 import { auth } from '@databases/db';
 
 export const POST: RequestHandler = async ({ locals }) => {
@@ -30,7 +30,11 @@ export const POST: RequestHandler = async ({ locals }) => {
 		}
 
 		// Disable 2FA
-		const twoFactorService = getDefaultTwoFactorAuthService(auth);
+		if (!auth) {
+			logger.error('Auth service not initialized during 2FA disable request');
+			throw error(500, 'Auth service not available');
+		}
+		const twoFactorService = getDefaultTwoFactorAuthService(auth.authInterface);
 		const success = await twoFactorService.disable2FA(user._id, tenantId);
 
 		if (!success) {

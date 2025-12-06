@@ -2,38 +2,43 @@
 @file: /src/components/Dropdown.svelte
 @component: 
 **Dropdown component that allows selection from a list of items. It supports custom styling, item modification, and an optional icon.**
+
+### Props
+- `items`: Array<any> - List of items to choose from.
+- `selected`: any - Currently selected item (default: first item in `items`).
+- `label`: string - Optional label for the dropdown button.
+- `modifier`: (input: any) => any - Function to modify how items are displayed.
+- `class`: string - Custom class for the dropdown container.
+
+### Features
+- **Customizable Items**: Accepts any array of items for selection.
+- **Default Selection**: Automatically selects the first item if none is provided.
+- **Item Modification**: Allows a function to modify item display.
+- **Expandable Dropdown**: Toggles visibility of the item list.
 -->
 
 <script lang="ts">
 	import { twMerge } from 'tailwind-merge';
 
 	// Define props using $props
-	let {
+	const {
 		items, // Array of selectable items
 		selected = items[0], // Currently selected item, default to first item
 		label = '', // Optional label for the dropdown
 		modifier = (input: any) => input, // Function to modify how items are displayed
-		icon = undefined, // Optional icon for the dropdown
-		ariaLabel = 'Select an option',
-		class: className = '', // Custom class for the dropdown container
-		dropdownId = 'dropdown-' + Math.random().toString(36).substr(2, 9) // Unique ID for a11y
-	} = $props<{
-		items: any[];
-		selected?: any;
-		label?: string;
-		modifier?: (input: any) => any;
-		icon?: string | undefined;
-		class?: string;
-		ariaLabel?: string;
-		dropdownId?: string;
-	}>();
+		class: className = '' // Custom class for the dropdown container
+	} = $props();
 
 	// State for dropdown expansion and selected item
 	let expanded = $state(false);
 	let currentSelected = $state(selected);
 
+	$effect(() => {
+		currentSelected = selected;
+	});
+
 	// Derived state for filtered items
-	let filteredItems = $derived(items.filter((item) => item !== currentSelected));
+	const filteredItems = $derived(items.filter((item: any) => item !== currentSelected));
 
 	// Toggle dropdown expansion
 	function toggleExpanded() {

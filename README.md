@@ -1,32 +1,28 @@
 <p style="border: none; margin-bottom:0; padding-bottom: 0;" align="center">
-  <img width="200" alt="SveltyCMS logo" src="https://github.com/SveltyCMS/SveltyCMS/raw/main/static/SveltyCMS-light.png">
+  <img width="200" alt="SveltyCMS logo" src="https://raw.githubusercontent.com/SveltyCMS/SveltyCMS/main/static/SveltyCMS.png">
 </p>
 
 <h1 align="center"><strong>SveltyCMS - Headless CMS with Sveltekit Power</strong></h1>
-<p align="center"><strong>(Still in Development - Your Support is always Appreciated!!)</strong></>
+<p align="center"><strong>(Still in Development — your support is appreciated!)</strong></p>
 
-<p align="center">
- <img alt="Latest SemVer" src="https://img.shields.io/github/v/tag/Rar9/SveltyCMS">
- <img alt="GitHub issues" src="https://img.shields.io/github/issues/Rar9/SveltyCMS">
-</p>
+<div align="center">
 
-<p align="center">
-  <a href="https://kit.svelte.dev/">
-    <img src="https://img.shields.io/badge/Svelte-FF3E00?logo=svelte&amp;logoColor=fff&amp;" alt="Sveltekit Badge"/>
-  </a>
+[![Chat](https://img.shields.io/discord/1369537436656603188?label=chat&logo=discord&color=7289da)](https://discord.gg/qKQRB6mP)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1%20Fair%20Source-blue.svg)](LICENSE.md)
+<img alt="Latest SemVer" src="https://img.shields.io/github/v/tag/SveltyCMS/SveltyCMS">
+<img alt="GitHub issues" src="https://img.shields.io/github/issues/SveltyCMS/SveltyCMS">
+![Secure](https://img.shields.io/badge/Security-Fortress-blue)
+<img alt="Bundle Size" src="https://img.shields.io/badge/Bundle-508%20KB%20Brotli-success?style=flat">
 
-  <a href="https://www.typescriptlang.org/">
-    <img src="https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&amp;logoColor=fff&amp;" alt="TypeScript Badge"/>
-  </a>
+</div>
 
-  <a href="https://www.mongodb.com/">
-    <img src="https://img.shields.io/badge/MongoDB-47A248?logo=mongodb&amp;logoColor=fff&amp;" alt="Mongodb Badge" />
-  </a>
+<div align="center">
 
-  <a href="https://tailwindcss.com/">
-    <img src="https://img.shields.io/badge/Tailwind%20CSS-06B6D4?logo=tailwindcss&logoColor=fff&" alt="Tailwindcss Badge" />
-  </a>
-</p>
+[![SvelteKit](https://img.shields.io/badge/SvelteKit-V2-FF3E00?logo=svelte)](https://kit.svelte.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript)](https://www.typescriptlang.org/)
+[![Tailwindcss](https://img.shields.io/badge/Tailwind%20CSS-4-38B2AC)](https://tailwindcss.com/)
+
+</div>
 
 <p align="center">
   <a href="https://github.com/SveltyCMS/SveltyCMS/actions/workflows/github-code-scanning/codeql"><img alt="CodeQL" src="https://github.com/SveltyCMS/SveltyCMS/actions/workflows/github-code-scanning/codeql/badge.svg"></a>
@@ -38,33 +34,69 @@
 
 <h3 align="center"><strong>It's lightning fast, flexible and an easy to use modern content management system to provide a headless backend</strong></h3>
 
-This SveltyCMS headless CMS provides a powerful backend based on a modern [SvelteKit 2 / Svelte 5](https://svelte.dev) framework. Being designed to be database agnostic, we currently launch with a fast [MongoDB](https://www.mongodb.com), and will use [drizzel](https://drizzle-orm.netlify.app) for future SQL/Postgres support.
+This SveltyCMS headless CMS provides a powerful backend based on a modern [SvelteKit 2 / Svelte 5](https://svelte.dev) framework. Being designed to be database agnostic, we currently launch with [MongoDB 9](https://www.mongodb.com); SQL/Postgres support via [Drizzle ORM](https://drizzle-orm.netlify.app) is planned.
 
-Content Collections can easily be implemented, due to full typescript support by using many available widgets. We offer two ways to use define your collections, via code or via a Gui based collection builder.
+You can define Content Collections in two ways: in code or via the GUI-based collection builder. Full TypeScript support and a rich widget library make it straightforward to build custom data structures.
 
-All Widget fields offer full translation, and customization, validation using [valibot](https://valibot.dev) and access handling..
+All widget fields support localization, validation using [Valibot](https://valibot.dev), and access control.
 
-The System language uses [Inlang's Paraglide JS](https://inlang.com/m/gerre34r/library-inlang-paraglideJs) a light weight JavaScript i18n library. :gb: English is our default and we offer multiple languages out of the box. More Languages can easily be extended to support further languages.
+System localization uses [Inlang Paraglide JS](https://inlang.com/m/gerre34r/library-inlang-paraglideJs), a lightweight, type-safe i18n library. English is the default; additional languages are bundled and can be extended.
 
-We used [tailwindcss](https://tailwindcss.com) and a [skeleton UI toolkit](https://www.skeleton.dev), so the CMS can be quickly optimized to your personal needs.
+We use the latest [tailwindcss v4](https://tailwindcss.com) and a [skeleton UI toolkit v4](https://www.skeleton.dev), so the CMS can be quickly optimized to your personal needs.
 
-The Backend Data is provided via Rest Api or [GraphQL Yoga](https://the-guild.dev/graphql/yoga-server), to build extremely fast frontends.
+Backend data is available via REST API or [GraphQL Yoga](https://the-guild.dev/graphql/yoga-server) for fast, flexible frontends.
+
+## ⭐ Key Features
+
+| Feature                    | Status     | Notes                                                         |
+| -------------------------- | ---------- | ------------------------------------------------------------- |
+| Collection Builder         | ✅         | GUI and code-based definitions                                |
+| Typed Widget System        | ✅         | Localization, validation, access control                      |
+| Multi-language (Paraglide) | ✅         | Type-safe i18n out of the box                                 |
+| REST API                   | ✅         | CRUD and configuration endpoints                              |
+| GraphQL API (Yoga)         | ✅         | High-performance schema                                       |
+| Database Resilience        | ✅         | Retries, self-healing reconnection, diagnostics, log download |
+| Email Templating           | ✅         | Svelte Email + SMTP                                           |
+| Roles & Permissions        | ✅         | Database-backed access control                                |
+| SQL/Postgres via Drizzle   | 📅 Planned | Roadmap item                                                  |
+
+## 🚀 Quick Start
+
+Get up and running fast:
+
+1. **Clone and install**
+
+```bash
+git clone https://github.com/SveltyCMS/SveltyCMS.git
+cd SveltyCMS
+bun install  # or npm/pnpm
+```
+
+2. **Start dev server** (guided installer auto-launches)
+
+```bash
+bun run dev  # or npm run dev / pnpm run dev
+```
+
+3. **Open the app**
+
+- Admin: http://localhost:5173/admin
+- API: http://localhost:5173/api
+- GraphQL: http://localhost:5173/api/graphql
+
+Prefer a full walkthrough? See: [./docs/getting-started.mdx](./docs/getting-started.mdx)
 
 <p align="center">
- <img width="100%" alt="SveltyCMS Gui" src="https://github.com/SveltyCMS/SveltyCMS/blob/main/static/docs/SveltyCMS-Demo1.png">
+ <img width="100%" alt="SveltyCMS Gui" src="https://raw.githubusercontent.com/SveltyCMS/SveltyCMS/main/static/docs/SveltyCMS-Demo1.png">
 </p>
 
-## :toolbox: SveltyCMS & DXP: Your Gateway to Streamlined Digital Experiences
+## 🛠️ Developer Experience (DXP)
 
-Leverage the power of SveltyCMS along with the capabilities of Developer Experience Platform (DXP). This potent combination redefines content development, making it agile, efficient and optimized.
+- CLI installer auto-launches for smooth first-run setup
+- Typed widgets and schema-driven collection builder
+- Fast feedback loop with hot reloads and strong typing
 
-When DXP integrates into our CMS, it presents a suite of advanced tools, offering developers the freedom and adaptability for content creation and management. The result is a streamlined workflow and a quicker process of crafting superior quality content.
-
-Experience a leap in productivity with DXP seamlessly woven into SveltyCMS. Watch it automate routine tasks, provide clear interfaces and simplify CMS management. Developers can now channel their focus on core tasks - creating premium content and applications.
-
-Footnote: As a headless CMS fortified with GraphQL API, SveltyCMS fully harnesses the potential of DXP, driving functions, ensuring scalability, enhancing adaptability and delivering personalized digital experiences. Empower your development voyage today with the versatile capabilities of SveltyCMS integrated with DXP.
-
-## :rocket: Setup
+## 🚀 Setup
 
 ### Clone the repository
 
@@ -151,40 +183,41 @@ bun run preview
 
 </details>
 
-### Automated Setup via CLI Installer
+### Setup Wizard (auto)
 
-SveltyCMS features an intelligent CLI installer that automatically launches when you start the development server without configuration files. The installer handles all setup automatically:
+When starting the dev server without configuration, the guided installer launches automatically:
 
-- **Smart Detection**: Runs automatically via `vite.config.ts` when config files are missing
-- **Database Configuration**: Choose from MongoDB, PostgreSQL, or SQLite
-- **Admin Account Setup**: Create your first administrator account
-- **Security Configuration**: Automatic generation of secrets and keys
-- **Email & OAuth Setup**: Optional SMTP and Google OAuth configuration
+- Smart detection via `vite.config.ts`
+- Database configuration: MongoDB (SQL/Postgres planned via Drizzle ORM)
+- Admin account setup, secrets/keys generation
+- Optional SMTP and Google OAuth configuration
 
-Simply run `bun run dev` (or npm/pnpm equivalent) and follow the interactive prompts!
+Start with:
+
+```bash
+bun run dev  # or npm run dev / pnpm run dev
+```
 
 ### Development and Production
 
 See our `package.json` for more information about development, build, preview, format, lint & testing commands.
 
-Development server runs on `localhost:5173`
-Preview server runs on `localhost:4173`
+- Development server runs on `localhost:5173`
+- Preview server runs on `localhost:4173`
 
-## :lock: Authentication & Security
+## 🔒 Authentication & Security
 
 We want to keep your data Private and Secure.
 
 Our extensive Authentication allows us to stay flexible for the future and adapt to changing security needs.
 
-You can login into SveltyCMS by email and password or use google oauth.
+You can log in with email/password or Google OAuth. Role- and field-based access control lets you define precisely who can view, edit, or delete content. Sensitive data is masked in logs; admin-only endpoints protect operational features.
 
-Field-based content access enables the allocation of varying levels of access to users according to their roles and permissions. This way, you can control who can view, edit, or delete your data.
-
-## :art: Easy Theme Adaptions to your needs
+## 🎨 Easy Theme Adaptions to your needs
 
 If you require a different look, use the [skeleton theme generator](https://www.skeleton.dev/docs/generator) and modify the `SveltyCMSTheme.ts` to your needs
 
-## :earth_africa: Great System Localization i18n infrastructure
+## 🌍 Great System Localization i18n infrastructure
 
 <table>
 <tr>
@@ -192,59 +225,140 @@ If you require a different look, use the [skeleton theme generator](https://www.
 
 We use [Paraglide JS](https://inlang.com/m/gerre34r/library-inlang-paraglideJs), the best i18n library together with [inlang](https://inlang.com/) ecosystem for first class System Translations with full typescript support.
 
-Our System Translations are available at: [inlang](https://inlang.com/editor/github.com/Rar9/SveltyCMS) and can easily be extended.
+Our System Translations are available at: [inlang](https://inlang.com/editor/github.com/SveltyCMS/SveltyCMS) and can easily be extended.
 
 If a language has not yet been defined, reach out to us, so that you can help extend the System Localization.
 
 </td>
 <td>
 
-[![inlang status badge](https://badge.inlang.com/?url=github.com/Rar9/SveltyCMS)](https://fink.inlang.com/github.com/Rar9/SveltyCMS?ref=badge)
+[![inlang status badge](https://badge.inlang.com/?url=github.com/SveltyCMS/SveltyCMS)](https://fink.inlang.com/github.com/SveltyCMS/SveltyCMS?ref=badge)
 
 </td>
 </tr>
 </table>
 
-## :clipboard: Easily create Data Collections
+## 📋 Easily create Data Collections
 
 Great Experience to designing user-friendly and intuitive interfaces for managing content.
 Full Typescript support to display all available widgets, options to create fully custom data structures.
 
-## :incoming_envelope: Flexible Email Templating System
+## 📧 Flexible Email Templating System
 
 Build and send emails using [Svelty Email](https://svelte-email.vercel.app/) and TypeScript.
 
-## :question: Need help
+## 📦 Optimized Bundle Size
 
-Contact us if you're struggling installation or other issues via:
-[GitHub Discussions](https://github.com/SveltyCMS/SvelteCMS/discussions)
+SveltyCMS is built with modern optimization techniques resulting in a **compact bundle** compared to traditional CMS platforms:
 
-## :rocket: Semantic Versioning
+<div align="center">
+
+| CMS Platform    | Bundle Size (gzipped) | Bundle Size (Brotli) | Technology Stack   |
+| --------------- | --------------------- | -------------------- | ------------------ |
+| **SveltyCMS**   | **604 KB**            | **508 KB** ⚡        | SvelteKit 5 + Vite |
+| WordPress Admin | ~800 KB               | ~675 KB              | jQuery + PHP       |
+| Drupal Admin    | ~1.1 MB               | ~930 KB              | jQuery + Drupal    |
+
+</div>
+
+**What this means:**
+
+- ✅ **Smaller downloads** = Faster initial load
+- ✅ **Lower bandwidth costs** = Savings at scale
+- ✅ **Better mobile experience** = Works well on slower connections
+- ✅ **Brotli compression** = Automatically served by modern servers
+
+## 📚 Documentation
+
+Comprehensive documentation is available to help you get started:
+
+- 📖 **[Documentation](./docs/)** — Guides, API reference, and architecture
+- 🎯 **[Getting Started](./docs/getting-started.mdx)** — Quick start guide
+- 🏗️ **Architecture: Database Resilience** — [./docs/architecture/database-resilience.mdx](./docs/architecture/database-resilience.mdx)
+- 🤝 **[Contributing Guide](./CONTRIBUTING.md)** — How to contribute
+
+## 🔌 Quick API Examples
+
+**REST** (fetch 5 posts):
+
+```bash
+curl -H "Authorization: Bearer <token>" \
+  "http://localhost:5173/api/collections/posts?limit=5"
+```
+
+**GraphQL** (posts with author):
+
+```graphql
+query {
+	posts(limit: 5) {
+		id
+		title
+		slug
+		author {
+			name
+		}
+	}
+}
+```
+
+## 📜 License: Fair Source (BSL 1.1)
+
+SveltyCMS is licensed under the [Business Source License 1.1 (BSL 1.1)](LICENSE.md) — Fair Source software that balances openness with sustainability.
+
+### What this means:
+
+- ✅ **Free for individuals & small businesses** — Use, modify, and deploy in production if your organization's total finances are under $1,000,000 USD
+- 💼 **Paid license for larger organizations** — Commercial license required if total finances exceed $1M USD
+- 🔓 **Future open source** — Automatically converts to MIT License on the "Change Date" specified in the license file
+- 🤝 **Open collaboration** — Source code is publicly available; contributions welcome
+
+### Who needs a paid license?
+
+If your organization's **Total Finances** (revenue, funding, assets) exceed $1,000,000 USD, you must purchase a commercial license to use SveltyCMS in production.
+
+### Commercial licensing inquiries:
+
+📧 **Email:** info@sveltycms.com
+
+For more details, see the full [LICENSE](LICENSE) file.
+
+## ❓ Need help?
+
+Contact us if you're struggling with installation or other issues:
+
+- 💬 [GitHub Discussions](https://github.com/SveltyCMS/SveltyCMS/discussions)
+- 💬 [Discord Server](https://discord.gg/qKQRB6mP)
+- 🔧 [Report Issues](https://github.com/SveltyCMS/SveltyCMS/issues)
+- 📖 [Documentation](./docs/)
+- 📧 Email: support@sveltycms.com
+
+## 🚀 Semantic Versioning
+
+For detailed information on our Git workflow, branching strategy, and commit conventions, see our [Git Workflow & Automated Releases guide](docs/git-workflows.mdx).
 
 We use [semantic versioning](https://semver.org/) to manage our releases. This means that our version numbers follow a specific format: `MAJOR.MINOR.PATCH`.
 
-- `MAJOR` version changes when we make incompatible API changes,
-- `MINOR` version changes when we add functionality in a backwards-compatible manner, and
-- `PATCH` version changes when we make backwards-compatible bug fixes.
+- `MAJOR` version changes when we make incompatible API changes
+- `MINOR` version changes when we add functionality in a backwards-compatible manner
+- `PATCH` version changes when we make backwards-compatible bug fixes
 
 When submitting pull requests, please make sure your commit messages follow the [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) specification. This will help us automatically generate changelogs and release notes.
 
-Please also read our [Code of Conduct](https://github.com/SveltyCMS/SvelteCMS/blob/main/CODE-OF-CONDUCT.md) before submitting Pull Requests.
+Please also read our [Code of Conduct](https://github.com/SveltyCMS/SveltyCMS/blob/main/CODE-OF-CONDUCT.md) before submitting Pull Requests.
 
-If your PR makes a change that should be noted in one or more packages' changelogs, generate a changeset by running pnpm changeset and following the prompts.
-Changesets that add features should be minor and those that fix bugs should be patch.
+If your PR makes a change that should be noted in one or more packages' changelogs, generate a changeset by running `pnpm changeset` and following the prompts. Changesets that add features should be `minor` and those that fix bugs should be `patch`.
 
-Run the tests with `pnpm test` and lint the project with `pnpm lint` and `pnpm check`
+Run the tests with `pnpm test` and lint the project with `pnpm lint` and `pnpm check`.
 
 Please prefix changeset messages with `feat:`, `fix:`, or `chore:`.
 
-Thank you for helping us maintain a consistent and predictable release process! :heart:
+Thank you for helping us maintain a consistent and predictable release process! ❤️
 
-# Contributing
+## 🤝 Contributing
 
-We welcome all kinds of contributions! Please see our [`CONTRIBUTING.md`](https://github.com/SveltyCMS/SvelteCMS/CONTRIBUTING.md) for details on how to get started with this.
+We welcome all kinds of contributions! Please see our [CONTRIBUTING.md](./CONTRIBUTING.md) for details on how to get started.
 
-## :moneybag: Sponsoring
+## � Sponsoring
 
 If you find our project useful and would like to support its development, you can become a sponsor! Your sponsorship will help us cover the costs of maintaining the project and allow us to dedicate more time to its development.
 
@@ -253,17 +367,19 @@ There are several ways you can sponsor us:
 - [Become a GitHub sponsor](https://github.com/sponsors/Rar9)
 - [Donate via PayPal](https://www.paypal.com/donate/?hosted_button_id=5VA28AG6MW2H2)
 
-Thank you for your support!
+Thank you for your support! 🙏
 
-## :clap: Thanks
+## 👏 Thanks
 
-To all our contributors without this SveltyCMS would never have been possible.
+To all our contributors — without you, SveltyCMS would never have been possible.
 
-# :star: Give us a star
+## ⭐ Give us a star
 
-If you like what we're doing, give us a `star` and share our `SveltyCMS` project with others
+If you like what we're doing, give us a `star` and share our `SveltyCMS` project with others!
+
+---
 
 <p align="center">
-<img width="100%" alt="SveltyCMS Builder" src="https://github.com/SveltyCMS/SveltyCMS/blob/main/static/docs/SveltyCMS-Demo2.png">
-<img width="100%" alt="SveltyCMS User" src="https://github.com/SveltyCMS/SveltyCMS/blob/main/static/docs/SveltyCMS-Demo3.png">
+<img width="100%" alt="SveltyCMS Builder" src="https://raw.githubusercontent.com/SveltyCMS/SveltyCMS/main/static/docs/SveltyCMS-Demo2.png">
+<img width="100%" alt="SveltyCMS User" src="https://raw.githubusercontent.com/SveltyCMS/SveltyCMS/main/static/docs/SveltyCMS-Demo3.png">
 </p>
