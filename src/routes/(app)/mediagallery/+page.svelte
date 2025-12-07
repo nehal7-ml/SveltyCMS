@@ -39,6 +39,7 @@ Displays a collection of media files (images, documents, audio, video) with:
 	import MediaTable from './MediaTable.svelte';
 	import VirtualMediaGrid from './VirtualMediaGrid.svelte';
 	import AdvancedSearchModal from './AdvancedSearchModal.svelte';
+	import ImageEditorModal from '@src/components/imageEditor/ImageEditorModal.svelte';
 	// Skeleton
 	import { getModalStore, type ModalSettings } from '@skeletonlabs/skeleton';
 	import { showToast } from '@utils/toast';
@@ -70,6 +71,8 @@ Displays a collection of media files (images, documents, audio, video) with:
 	// Enterprise features state
 	let showAdvancedSearch = $state(false);
 	let advancedSearchCriteria: SearchCriteria | null = $state(null);
+	let showEditor = $state(false);
+	let imageToEdit = $state<MediaImage | null>(null);
 
 	// Performance optimization: Use virtual scrolling for large collections
 	const USE_VIRTUAL_THRESHOLD = 100;
@@ -393,9 +396,17 @@ Displays a collection of media files (images, documents, audio, video) with:
 		}
 	}
 
-	// Handle view change
 	function handleViewChange(newView: 'grid' | 'table') {
 		view = newView;
+		storeUserPreference(view, gridSize, tableSize);
+	}
+	function handleSizeChange(detail: { type: string; size: string }) {
+		view = detail.type as 'grid' | 'table'; // Update the view based on the type in detail
+		if (detail.type === 'grid') {
+			gridSize = detail.size as 'tiny' | 'small' | 'medium' | 'large';
+		} else {
+			tableSize = detail.size as 'tiny' | 'small' | 'medium' | 'large';
+		}
 		storeUserPreference(view, gridSize, tableSize);
 	}
 
@@ -591,6 +602,35 @@ Displays a collection of media files (images, documents, audio, video) with:
 	function clearAdvancedSearch() {
 		advancedSearchCriteria = null;
 		fetchMediaFiles(); // Reload all files
+	}
+
+	function handleEditImage(image: MediaImage) {
+		imageToEdit = image;
+		showEditor = true;
+	}
+
+	async function handleEditorSave(detail: { dataURL: string; file: File }) {
+		const { file } = detail;
+		showEditor = false;
+
+		const formData = new FormData();
+		formData.append('files', file);
+
+		try {
+			const response = await fetch('/mediagallery?/upload', {
+				method: 'POST',
+				body: formData
+			});
+			if (response.ok) {
+				showToast('Image saved successfully!', 'success');
+				fetchMediaFiles(true); // Force refresh
+			} else {
+				throw new Error('Failed to save edited image');
+			}
+		} catch (err) {
+			showToast('Error saving image', 'error');
+			logger.error('Error saving edited image', err);
+		}
 	}
 </script>
 
@@ -1037,7 +1077,7 @@ Displays a collection of media files (images, documents, audio, video) with:
 	{#if view === 'grid'}
 		{#if useVirtualScrolling}
 			<!-- Enterprise Virtual Scrolling for Large Collections (100+ files) -->
-			<VirtualMediaGrid {filteredFiles} {gridSize} ondeleteImage={handleDeleteImage} onBulkDelete={handleBulkDelete} />
+			<VirtualMediaGrid {filteredFiles} {gridSize} ondeleteImage={handleDeleteImage} onBulkDelete={handleBulkDelete} onEditImage={handleEditImage} />
 			<div class="alert variant-ghost-surface mt-4">
 				<iconify-icon icon="mdi:lightning-bolt" width="20"></iconify-icon>
 				<span class="text-sm">
@@ -1051,18 +1091,17 @@ Displays a collection of media files (images, documents, audio, video) with:
 				{gridSize}
 				ondeleteImage={handleDeleteImage}
 				onBulkDelete={handleBulkDelete}
-				on:sizechange={({ detail }) => {
-					if (detail.type === 'grid') {
-						gridSize = detail.size;
-						storeUserPreference(view, gridSize, tableSize);
-					}
-				}}
+				onsizechange={handleSizeChange}
+				onEditImage={handleEditImage}
 			/>
 		{/if}
 	{:else}
 		<MediaTable {filteredFiles} tableSize={safeTableSize} ondeleteImage={handleDeleteImage} />
 	{/if}
 </div>
+
+<!-- Editor Modal -->
+<ImageEditorModal bind:show={showEditor} image={imageToEdit} onsave={handleEditorSave} />
 
 <!-- Modals -->
 {#if showAdvancedSearch}
