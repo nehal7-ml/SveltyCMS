@@ -52,8 +52,20 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      # Generate .svelte-kit/tsconfig.json for path alias resolution
+      - name: Generate SvelteKit types
+        run: bunx svelte-kit sync
 
       - name: Run Unit Tests
         run: bun run test:unit
@@ -118,9 +130,34 @@ jobs:
           EOF
           echo "✅ Created config/private.test.ts"
 
+      # Create temporary config/private.ts for build (will be removed before E2E tests)
+      - name: Create temporary config for build
+        run: |
+          echo "📝 Creating temporary config/private.ts for build..."
+          cat > config/private.ts <<EOF
+          export const privateEnv = {
+            DB_TYPE: '${{ env.DB_TYPE }}',
+            DB_HOST: '${{ env.DB_HOST }}',
+            DB_PORT: ${{ env.DB_PORT }},
+            DB_NAME: '${{ env.DB_NAME }}',
+            DB_USER: '${{ env.DB_USER }}',
+            DB_PASSWORD: '${{ env.DB_PASSWORD }}',
+            JWT_SECRET_KEY: 'test_jwt_secret',
+            ENCRYPTION_KEY: 'test_encryption_key',
+            MULTI_TENANT: false
+          } as const;
+          EOF
+          echo "✅ Created temporary config/private.ts"
+
       # Build production version for faster, optimized testing
       - name: Build Production
         run: bun run build
+
+      # Kill any process using port 4173 to prevent conflicts
+      - name: Clean up port 4173
+        run: |
+          echo "🧹 Cleaning up port 4173..."
+          lsof -ti:4173 | xargs kill -9 2>/dev/null || echo "Port 4173 is free"
 
       # --- START PREVIEW SERVER (PORT 4173) ---
       - name: Start Preview Server
@@ -132,7 +169,10 @@ jobs:
           echo "✅ Preview server is ready!"
 
       - name: Run Integration Tests
-        run: bun run test:integration
+        run: bun run test:integration:run
+        env:
+          TEST_MODE: 'true' # Ensures server loads config/private.test.ts instead of config/private.ts
+          API_BASE_URL: 'http://localhost:4173'
 
   # ------------------------------------------------------------------
   # 3. E2E Tests (Requires Server + MongoDB + Browser)
@@ -168,16 +208,30 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install Playwright Browsers
-        run: bun x playwright install --with-deps chromium
+        run: bunx playwright install --with-deps
 
-      # Ensure fresh state - remove any existing config
-      - name: Clean config for fresh CI run
+      # Create temporary config/private.ts for build (will be removed before E2E tests)
+      - name: Create Temporary Config for Build
         run: |
-          echo "🧹 Ensuring fresh state for CI..."
-          rm -rf config/collections
-          rm -f config/private.ts
-          echo "✅ Cleaned config directory"
+          echo "📝 Creating temporary config/private.ts for build..."
+          cat > config/private.ts << 'EOF'
+          export default {
+            database: { type: 'mongodb', uri: 'mongodb://localhost:27017/temp' },
+            general: { siteURL: 'http://localhost:4173' }
+          };
+          EOF
+          echo "✅ Created temporary config/private.ts"
 
+      # Build production version for E2E testing
+      - name: Build Production
+        run: bun run build
+
+      # Remove temporary config before E2E tests (tests use fresh setup)
+      - name: Remove Temporary Config
+        run: |
+          echo "🧹 Removing temporary config/private.ts..."
+          rm -f config/private.ts
+          echo "✅ Removed temporary config, ready for E2E tests"
       # Create placeholder config/private.test.ts to ensure runtime config works
       - name: Create placeholder config/private.test.ts
         run: |
@@ -210,6 +264,17 @@ jobs:
           bun x wait-on http://localhost:4173 -t 60000
           echo "✅ Preview server is ready!"
 
+      # =================================================================
+      # E2E TESTS: Setup → Seed Users → RBAC → Main Suite
+      # =================================================================
+
+      # Remove temporary config for fresh setup wizard test
+      - name: Clean config for fresh setup test
+        run: |
+          echo "🧹 Removing temporary config/private.ts..."
+          rm -f config/private.ts
+          echo "✅ Cleaned - setup wizard will create real config"
+
       # STEP A: Run the Setup Wizard first to initialize the DB/User
       - name: 🧙‍♂️ Run Setup Wizard Test
         run: |
@@ -221,13 +286,29 @@ jobs:
           ADMIN_EMAIL: admin@example.com
           ADMIN_PASS: Admin123!
 
-      # STEP B: Run the rest of the tests (skipping the wizard)
+      # STEP B: Seed Additional Test Users (Developer, Editor)
+      - name: 🌱 Seed Additional Test Users
+        run: |
+          echo "=== Seeding developer and editor test users ==="
+          bun run scripts/seed-test-users.ts
+        env:
+          API_BASE_URL: http://localhost:4173
+          ADMIN_EMAIL: admin@example.com
+          ADMIN_PASS: Admin123!
+
+      # STEP C: Run Role-Based Access Control Tests
+      - name: 🔐 Run Role-Based Access Tests
+        run: |
+          echo "=== Running RBAC tests (admin, developer, editor) ==="
+          bunx playwright test tests/playwright/role-based-access.spec.ts --project=chromium --reporter=list
+
+      # STEP D: Run the rest of the tests (skipping the wizard and RBAC)
       - name: 🧪 Run Application E2E Tests
-        if: success() # Only run if Wizard passed
+        if: success() # Only run if previous tests passed
         run: |
           echo "=== Running main E2E suite ==="
-          # --grep-invert skips the setup wizard since we just ran it
-          bunx playwright test --project=chromium --reporter=list --grep-invert "setup-wizard"
+          # --grep-invert skips the setup wizard and RBAC since we just ran them
+          bunx playwright test --project=chromium --reporter=list --grep-invert "setup-wizard|role-based"
 
       - uses: actions/upload-artifact@604373da6381bf24206979c74d06a550515601b9 # v4.6.0
         if: always()

@@ -31,8 +31,7 @@ export function buildDatabaseConnectionString(config: DatabaseConfig): string {
 			const protocol = isSrv ? 'mongodb+srv' : 'mongodb';
 			const port = isSrv || !config.port ? '' : `:${config.port}`;
 
-			// Check if this is localhost without auth
-			const isLocalhost = config.host === 'localhost' || config.host === '127.0.0.1';
+			// Check if credentials are provided
 			const hasCredentials = config.user && config.password;
 
 			const user = hasCredentials ? `${encodeURIComponent(config.user)}:${encodeURIComponent(config.password)}@` : '';
@@ -49,24 +48,7 @@ export function buildDatabaseConnectionString(config: DatabaseConfig): string {
 
 			const connectionString = `${protocol}://${user}${config.host}${port}/${config.name}${queryParams}`;
 
-			// Enhanced logging for Atlas connections
-			if (isSrv) {
-				logger.info('🌐 Building MongoDB Atlas (SRV) connection string', {
-					host: config.host,
-					database: config.name,
-					hasCredentials,
-					user: config.user || 'none'
-				});
-			} else {
-				logger.info('🔧 Building MongoDB connection string', {
-					host: config.host,
-					port: config.port || '27017',
-					database: config.name,
-					hasCredentials,
-					isLocalhost
-				});
-			}
-
+			// Logging happens in getSetupDatabaseAdapter with correlationId
 			return connectionString;
 		}
 		default: {
